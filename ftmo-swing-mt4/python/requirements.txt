@@ -1,0 +1,3 @@
+# No third-party runtime dependencies -- the simulator/risk/signal modules
+# are pure standard library (zoneinfo, csv, dataclasses) by design, so the
+# offline research environment has nothing extra to install or pin.

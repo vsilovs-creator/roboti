@@ -1,0 +1,95 @@
+{
+  "_meta": {
+    "description": "Example configuration for the FTMO 2-Step Swing prototype. Every field marked UNVERIFIED must be confirmed against the live terminal / broker / FTMO agreement before this config is used for anything beyond EXPLORATORY offline research.",
+    "config_version": "0.1.0-exploratory"
+  },
+  "account": {
+    "initial_balance": 10000.0,
+    "currency": "USD",
+    "account_number": null,
+    "server_name": null,
+    "_comment_account_number_server_name": "Must be filled from the live terminal (AccountNumber()/AccountServer()) before any live/demo run. Used as the instance/state binding guard."
+  },
+  "ftmo_limits": {
+    "daily_equity_floor_offset_usd": 500.0,
+    "total_equity_floor_usd": 9000.0,
+    "_comment": "FTMO 2-Step Swing published limits as of the 2026-09-17 conversation. Re-verify against the current FTMO agreement before operational use (see docs/UNKNOWNS.md)."
+  },
+  "robot_limits": {
+    "daily_working_buffer_offset_usd": 300.0,
+    "total_working_floor_usd": 9200.0,
+    "_comment": "Robot works to a tighter (more conservative) limit than the raw FTMO limit. Applicable floor = max(balance_at_midnight - 300, 9200)."
+  },
+  "risk": {
+    "risk_per_idea_usd": 25.0,
+    "risk_per_idea_usd_alt_scenario": 50.0,
+    "max_concurrent_risk_usd": 100.0,
+    "correlated_group_max_risk_usd": 50.0,
+    "correlated_groups": {
+      "USD_MAJORS_DIRECTIONAL": ["EURUSD", "GBPUSD"]
+    },
+    "execution_buffer_usd": 5.0,
+    "_comment_execution_buffer": "Hypothetical safety margin subtracted in the pre-trade worst-case projection to absorb slippage/spread widening not otherwise modeled. Not an FTMO requirement -- a prototype design choice."
+  },
+  "timezones": {
+    "ftmo_day_tz": "Europe/Prague",
+    "strategy_session_tz": "Europe/London",
+    "server_time_model": {
+      "mode": "UNVERIFIED",
+      "_comment": "One of 'fixed_offset_hours', 'zone_like', 'assume_utc'. Must be confirmed from the broker/terminal (server time vs GMT, and its own DST calendar) before CSV timestamps can be trusted for wall-clock-sensitive logic. See docs/UNKNOWNS.md item 1.",
+      "fixed_offset_hours": null,
+      "zone_like_hypothesis": "Europe/Bucharest",
+      "_comment_zone_like": "Common broker pattern (server = EET-like, UTC+2/+3 with its own DST) offered ONLY as a labeled sensitivity-analysis hypothesis, never as ground truth."
+    }
+  },
+  "symbols": {
+    "EURUSD": {
+      "broker_suffix": "",
+      "digits": 5,
+      "contract_size": 100000,
+      "min_lot": 0.01,
+      "max_lot": 50.0,
+      "lot_step": 0.01,
+      "stops_level_points": 0,
+      "swap_long_points": -11.06,
+      "swap_short_points": 0.59,
+      "triple_swap_weekday": "Wednesday",
+      "quote_currency": "USD",
+      "margin_currency": "EUR"
+    },
+    "GBPUSD": {
+      "broker_suffix": "",
+      "digits": 5,
+      "contract_size": 100000,
+      "min_lot": 0.01,
+      "max_lot": 50.0,
+      "lot_step": 0.01,
+      "stops_level_points": 0,
+      "swap_long_points": -6.78,
+      "swap_short_points": -3.76,
+      "triple_swap_weekday": "Wednesday",
+      "quote_currency": "USD",
+      "margin_currency": "GBP"
+    }
+  },
+  "costs": {
+    "commission_round_turn_usd_per_lot": null,
+    "_comment_commission": "UNKNOWN -- must be read from the live account/terminal. Never silently treated as 0 outside an explicitly labeled hypothetical scenario.",
+    "spread_model": "hypothetical_fixed_points",
+    "spread_points_hypothetical": {"EURUSD": 10, "GBPUSD": 15},
+    "_comment_spread": "Spread is floating per the instrument specification screenshot; no historical spread feed was supplied. This fixed-point value is a labeled EXPLORATORY placeholder only."
+  },
+  "strategy": {
+    "name": "london_range_breakout_retest_v1",
+    "range_window_london": ["00:00", "07:00"],
+    "entry_window_london": ["08:00", "11:00"],
+    "retest_max_bars_m5": 6,
+    "sl_atr_buffer_multiple": 0.10,
+    "atr_period_m5": 14,
+    "ema_period_h1": 200,
+    "tp_r_multiple": 2.0,
+    "session_close_london": "16:00",
+    "max_trades_per_symbol_per_day": 1,
+    "symbol_priority": ["EURUSD", "GBPUSD"]
+  }
+}
