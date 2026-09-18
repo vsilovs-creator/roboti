@@ -1,5 +1,5 @@
-"""Adapter for HistData.com's "Generic ASCII" 1-minute bar export format,
-for the long-history (2015-2025) S1-S8 comparison
+"""Adapter for HistData.com's 1-minute bar export formats, for the
+long-history (2015-2025) S1-S8 comparison
 (docs/LONG_HISTORY_EXPERIMENT_PLAN.md).
 
 Kept separate from bars.py's `load_m1_csv`: that loader is for the
@@ -10,21 +10,33 @@ DIFFERENT, already-confirmed timezone assumption. Reusing that model for
 HistData data would silently apply the wrong offset; per the task's own
 instruction ("Neizmanto esošo FTMO GMT+2/+3 konvertēšanu jaunajiem
 datiem automātiski"), this module applies ONLY HistData's own documented
-convention instead.
+convention instead -- to EVERY HistData export platform, not just one,
+since the underlying M1 series and its EST-without-DST timestamp
+convention is the same data regardless of which file syntax ("platform")
+it is exported in; only the column layout differs.
 
-HistData's own documented format (see the project's `histdata` PyPI
-package -- https://pypi.org/project/histdata/ -- and its README, read
-directly in this session): one semicolon-separated row per M1 bar,
+Two HistData export "platforms" are supported, auto-detected from the
+file/ZIP-member name (falling back to sniffing the first data line if
+that is inconclusive):
 
-    YYYYMMDD HHMMSS;OPEN;HIGH;LOW;CLOSE;VOLUME
+- **Generic ASCII** (`DAT_ASCII_*`): one semicolon-separated row per M1
+  bar, `YYYYMMDD HHMMSS;OPEN;HIGH;LOW;CLOSE;VOLUME` -- documented in the
+  `histdata` PyPI package's own README (read directly in this session).
+- **MetaTrader** (`DAT_MT_*`): one comma-separated row per M1 bar,
+  `YYYY.MM.DD,HH:MM,OPEN,HIGH,LOW,CLOSE,VOLUME` -- confirmed directly
+  from a real HistData MT-platform download in this session (its
+  column layout happens to be syntactically identical to this
+  project's OWN existing MT4-exported 2026 sample that `bars.load_m1_csv`
+  reads -- but the TIMEZONE is NOT the same, see above, so that loader
+  is still never reused here).
 
-with the timestamp in Eastern Standard Time (EST) *WITHOUT* Daylight
-Saving adjustments -- i.e. a FIXED UTC-5 offset year-round, never UTC-4,
-even in summer. This is HistData's own stated convention, not an
-assumption this project is making up; it is applied here as a constant
-`timedelta(hours=5)` added to the naive timestamp to reach UTC. Volume
-is documented as "always 0" and is ignored (this project's M1 bars carry
-no volume field).
+Both platforms use the SAME Eastern Standard Time (EST), *WITHOUT*
+Daylight Saving adjustment -- i.e. a FIXED UTC-5 offset year-round,
+never UTC-4, even in summer. This is HistData's own stated convention
+for their underlying data, not an assumption this project is making up;
+it is applied here as a constant `timedelta(hours=5)` added to the
+naive timestamp to reach UTC. Volume is documented as "always 0" and is
+ignored (this project's M1 bars carry no volume field).
 """
 from __future__ import annotations
 
@@ -37,7 +49,8 @@ from pathlib import Path
 from .bars import RichCandle
 
 # HistData's own documented convention (see module docstring): a FIXED
-# EST offset, never adjusted for daylight saving.
+# EST offset, never adjusted for daylight saving -- applies to every
+# platform this module supports.
 _HISTDATA_EST_TO_UTC = timedelta(hours=5)
 
 
@@ -91,15 +104,18 @@ def _sha256_of_rows(rows: list[RichCandle]) -> str:
     return h.hexdigest()
 
 
-def _read_lines(path: Path) -> list[str]:
-    """Returns the raw CSV lines for one HistData export -- transparently
-    unzips a `.zip` (HistData's own download format: one ZIP per
-    pair/year, containing exactly one Generic-ASCII CSV plus a status
-    report text file, per the `histdata` PyPI package's own documented
-    behavior) or reads a `.csv` directly if it was already extracted.
-    Never guesses which member is the data file: a ZIP with zero or more
-    than one `.csv` member raises immediately rather than silently
-    picking one."""
+def _read_lines(path: Path) -> tuple[list[str], str]:
+    """Returns (raw CSV lines, a name hint for platform auto-detection)
+    for one HistData export -- transparently unzips a `.zip` (HistData's
+    own download format: one ZIP per pair/year, containing exactly one
+    CSV plus a status report text file, per the `histdata` PyPI
+    package's own documented behavior) or reads a `.csv` directly if it
+    was already extracted. The hint is the ZIP member's own name (e.g.
+    `DAT_MT_GBPUSD_M1_2019.csv`) for a ZIP, or `path.name` otherwise --
+    HistData's own naming convention names the actual export platform,
+    which is more reliable than sniffing content alone. Never guesses
+    which member is the data file: a ZIP with zero or more than one
+    `.csv` member raises immediately rather than silently picking one."""
     if path.suffix.lower() == ".zip":
         with zipfile.ZipFile(path) as zf:
             csv_members = [n for n in zf.namelist() if n.lower().endswith(".csv")]
@@ -108,55 +124,76 @@ def _read_lines(path: Path) -> list[str]:
                     f"{path}: expected exactly one .csv member in the ZIP, found {csv_members!r}"
                 )
             with zf.open(csv_members[0]) as f:
-                return f.read().decode("utf-8").splitlines()
+                return f.read().decode("utf-8").splitlines(), csv_members[0]
     with path.open(newline="") as f:
-        return f.read().splitlines()
+        return f.read().splitlines(), path.name
 
 
-def parse_histdata_generic_ascii_m1(path: Path) -> tuple[list[RichCandle], DataQualityReport]:
-    """Parses one HistData "Generic ASCII" M1 export (semicolon-separated,
-    `YYYYMMDD HHMMSS;O;H;L;C;V`, EST-without-DST) into UTC `RichCandle`
-    rows, PLUS a `DataQualityReport` -- never silently drops/normalizes a
-    problem row without counting it. `path` may be either the extracted
-    `.csv` directly, OR the original `.zip` exactly as HistData serves it
-    (unzipped transparently in-memory, never written back to disk) --
-    the raw HistData download need not be unpacked first. A trailing/
-    leading blank line is skipped; anything else that fails to parse
-    raises (never silently skipped -- a malformed HistData export is a
-    reason to stop, not to quietly lose rows).
+def _parse_generic_ascii_line(line: str) -> tuple[datetime, float, float, float, float]:
+    date_time_s, o_s, h_s, l_s, c_s, _v_s = line.split(";")
+    naive = datetime.strptime(date_time_s, "%Y%m%d %H%M%S")
+    return naive, float(o_s), float(h_s), float(l_s), float(c_s)
 
-    Row handling, in order:
-    1. Parse timestamp (EST fixed offset -> UTC) and OHLC floats.
-    2. OHLC sanity check (low <= min(open,close) <= max(open,close) <=
-       high) -- a violation is COUNTED, never fixed by clamping (the
-       original row's OHLC is trusted verbatim otherwise; a violation
-       always means the raw source data itself is wrong, not this
-       adapter, and is surfaced for the caller to decide whether that
-       makes the whole file unusable).
-    3. Duplicate exact timestamps -- COUNTED, and only the FIRST
-       occurrence is kept (arbitrary but deterministic; a real duplicate
-       in HistData's own export is undocumented and unexpected, so
-       counting it loudly matters more than which copy survives).
-    4. Non-monotonic timestamps (this row's UTC time <= the previous
-       KEPT row's) -- COUNTED and the offending row is dropped, since
-       every simulator in this project assumes a strictly increasing M1
-       timeline.
-    """
-    source_sha256 = _sha256_of_file(path)
-    raw_rows: list[tuple[datetime, float, float, float, float]] = []
-    ohlc_violations = 0
-    for line in _read_lines(path):
+
+def _parse_mt_platform_line(line: str) -> tuple[datetime, float, float, float, float]:
+    date_s, time_s, o_s, h_s, l_s, c_s, _v_s = line.split(",")
+    naive = datetime.strptime(f"{date_s} {time_s}", "%Y.%m.%d %H:%M")
+    return naive, float(o_s), float(h_s), float(l_s), float(c_s)
+
+
+def _detect_platform(lines: list[str], name_hint: str) -> str:
+    """`"ascii"` or `"mt"`, from HistData's own file-naming convention
+    first (`DAT_ASCII_*` / `DAT_MT_*`), falling back to sniffing the
+    first non-empty data line's separator if the name is inconclusive
+    (e.g. a renamed file) -- never silently defaults to one platform
+    without evidence."""
+    upper = name_hint.upper()
+    if "DAT_ASCII_" in upper or "_ASCII_" in upper:
+        return "ascii"
+    if "DAT_MT_" in upper or "_MT_" in upper:
+        return "mt"
+    for line in lines:
         line = line.strip()
         if not line:
             continue
-        date_time_s, o_s, h_s, l_s, c_s, _v_s = line.split(";")
-        naive = datetime.strptime(date_time_s, "%Y%m%d %H%M%S")
+        if ";" in line:
+            return "ascii"
+        if "," in line:
+            return "mt"
+        raise ValueError(f"could not detect HistData platform from {name_hint!r} or its content")
+    raise ValueError(f"{name_hint!r} has no data lines to detect a platform from")
+
+
+def _parse_histdata_lines(
+    lines: list[str], line_parser,
+) -> tuple[list[tuple[datetime, float, float, float, float]], int]:
+    """Shared row-level parsing: applies `line_parser` (one of the two
+    per-platform functions above) to every non-blank line, converts EST
+    to UTC, and counts (never clamps) an OHLC sanity violation. Returns
+    the raw (UTC) rows plus the violation count; deduplication/
+    monotonicity/reporting is shared further, in `_build_result`."""
+    raw_rows: list[tuple[datetime, float, float, float, float]] = []
+    ohlc_violations = 0
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        naive, o, h, l, c = line_parser(line)
         utc_dt = (naive + _HISTDATA_EST_TO_UTC).replace(tzinfo=timezone.utc)
-        o, h, l, c = float(o_s), float(h_s), float(l_s), float(c_s)
         if not (l <= min(o, c) <= max(o, c) <= h):
             ohlc_violations += 1
         raw_rows.append((utc_dt, o, h, l, c))
+    return raw_rows, ohlc_violations
 
+
+def _build_result(
+    path: Path, raw_rows: list[tuple[datetime, float, float, float, float]], ohlc_violations: int,
+) -> tuple[list[RichCandle], DataQualityReport]:
+    """Shared post-processing (dedup, monotonicity, weekend count,
+    report assembly) for both HistData platforms -- see
+    `parse_histdata_generic_ascii_m1`'s docstring for the exact rules;
+    identical regardless of which platform's syntax produced `raw_rows`."""
+    source_sha256 = _sha256_of_file(path)
     row_count_raw = len(raw_rows)
     seen_times: set = set()
     duplicate_count = 0
@@ -200,3 +237,61 @@ def parse_histdata_generic_ascii_m1(path: Path) -> tuple[list[RichCandle], DataQ
         normalized_sha256=_sha256_of_rows(out),
     )
     return out, report
+
+
+def parse_histdata_generic_ascii_m1(path: Path) -> tuple[list[RichCandle], DataQualityReport]:
+    """Parses one HistData "Generic ASCII" M1 export (semicolon-separated,
+    `YYYYMMDD HHMMSS;O;H;L;C;V`, EST-without-DST) into UTC `RichCandle`
+    rows, PLUS a `DataQualityReport` -- never silently drops/normalizes a
+    problem row without counting it. `path` may be either the extracted
+    `.csv` directly, OR the original `.zip` exactly as HistData serves it
+    (unzipped transparently in-memory, never written back to disk) --
+    the raw HistData download need not be unpacked first. A trailing/
+    leading blank line is skipped; anything else that fails to parse
+    raises (never silently skipped -- a malformed HistData export is a
+    reason to stop, not to quietly lose rows).
+
+    Row handling, in order:
+    1. Parse timestamp (EST fixed offset -> UTC) and OHLC floats.
+    2. OHLC sanity check (low <= min(open,close) <= max(open,close) <=
+       high) -- a violation is COUNTED, never fixed by clamping (the
+       original row's OHLC is trusted verbatim otherwise; a violation
+       always means the raw source data itself is wrong, not this
+       adapter, and is surfaced for the caller to decide whether that
+       makes the whole file unusable).
+    3. Duplicate exact timestamps -- COUNTED, and only the FIRST
+       occurrence is kept (arbitrary but deterministic; a real duplicate
+       in HistData's own export is undocumented and unexpected, so
+       counting it loudly matters more than which copy survives).
+    4. Non-monotonic timestamps (this row's UTC time <= the previous
+       KEPT row's) -- COUNTED and the offending row is dropped, since
+       every simulator in this project assumes a strictly increasing M1
+       timeline.
+    """
+    lines, _hint = _read_lines(path)
+    raw_rows, ohlc_violations = _parse_histdata_lines(lines, _parse_generic_ascii_line)
+    return _build_result(path, raw_rows, ohlc_violations)
+
+
+def parse_histdata_mt_platform_m1(path: Path) -> tuple[list[RichCandle], DataQualityReport]:
+    """Same as `parse_histdata_generic_ascii_m1`, for HistData's
+    "MetaTrader" export platform instead (comma-separated,
+    `YYYY.MM.DD,HH:MM,O,H,L,C,V`, SAME EST-without-DST convention --
+    see the module docstring). `path` may be the `.zip` or an already-
+    extracted `.csv`, same as the Generic ASCII function."""
+    lines, _hint = _read_lines(path)
+    raw_rows, ohlc_violations = _parse_histdata_lines(lines, _parse_mt_platform_line)
+    return _build_result(path, raw_rows, ohlc_violations)
+
+
+def parse_histdata_m1(path: Path) -> tuple[list[RichCandle], DataQualityReport]:
+    """Auto-detects which HistData export platform `path` is (Generic
+    ASCII or MetaTrader -- see `_detect_platform`) and parses it
+    accordingly. Prefer calling this directly unless the platform is
+    already known for certain; it is not itself a third format, just a
+    dispatcher over the two functions above."""
+    lines, name_hint = _read_lines(path)
+    platform = _detect_platform(lines, name_hint)
+    line_parser = _parse_generic_ascii_line if platform == "ascii" else _parse_mt_platform_line
+    raw_rows, ohlc_violations = _parse_histdata_lines(lines, line_parser)
+    return _build_result(path, raw_rows, ohlc_violations)

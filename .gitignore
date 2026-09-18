@@ -7,3 +7,9 @@ __pycache__/
 venv/
 .env
 .DS_Store
+
+# Raw long-history M1 downloads (HistData ZIPs/CSVs, docs/LONG_HISTORY_EXPERIMENT_PLAN.md) --
+# too large/numerous to commit; keep only the code, plan, manifests, and
+# compact per-run results in git.
+ftmo-swing-mt4/data/raw/long_history/*
+!ftmo-swing-mt4/data/raw/long_history/.gitkeep

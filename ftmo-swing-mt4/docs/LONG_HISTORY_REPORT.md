@@ -108,20 +108,34 @@ first for any real M1 multi-year data.
 ## What was built and tested instead
 
 - **`python/ftmo_sim/histdata_adapter.py`** -- parses HistData's
-  documented "Generic ASCII" M1 format (`YYYYMMDD HHMMSS;O;H;L;C;V`,
-  fixed EST-without-DST offset, confirmed from the `histdata` package's
-  own README read in this session) into this project's existing
+  documented M1 export formats into this project's existing
   `RichCandle`/UTC shape, plus a `DataQualityReport` (duplicate/
   non-monotonic/OHLC-sanity counts, weekend-row count, first/last
-  timestamp, source and normalized SHA256). Accepts HistData's raw
-  `.zip` download directly (unzips the one CSV member in-memory) as well
-  as an already-extracted `.csv`, so a downloaded file can be dropped
-  straight into `data/raw/long_history/` with no manual unzip step.
-  Tested against 7 hand-written synthetic fixtures (including one real
-  in-memory ZIP) in `python/tests/test_histdata_adapter.py`
-  -- deliberately NOT tested against any of the license-unverified
-  GitHub mirrors found in section 2.1, to avoid even incidentally
-  treating that data as trustworthy.
+  timestamp, source and normalized SHA256). Supports BOTH HistData
+  export "platforms" (auto-detected by `parse_histdata_m1()` from the
+  file/ZIP-member name, falling back to content sniffing): "Generic
+  ASCII" (`YYYYMMDD HHMMSS;O;H;L;C;V`) and "MetaTrader"
+  (`YYYY.MM.DD,HH:MM,O,H,L,C,V`) -- both on the SAME fixed
+  EST-without-DST offset, confirmed from the `histdata` package's own
+  README. The MetaTrader-platform support was added after the user
+  supplied a REAL HistData download in this session
+  (`HISTDATA_COM_MT_GBPUSD_M12019.zip`) that turned out to be that
+  platform, not the one this module originally supported -- run through
+  the adapter directly (no manual unzip needed): 372,396 raw M1 rows,
+  60 duplicate timestamps counted and deduplicated, 0 non-monotonic
+  rows, 0 OHLC-sanity violations, full 2019-01-01 to 2019-12-31 UTC
+  coverage. This is the only real (non-synthetic) file the adapter has
+  been run against; it was NOT used to compute any strategy result,
+  only to confirm the parser/quality-report logic on real data. Accepts
+  HistData's raw `.zip` download directly (unzips the one CSV member
+  in-memory) as well as an already-extracted `.csv`. The 12 automated
+  tests in `python/tests/test_histdata_adapter.py` are all synthetic
+  fixtures (never the real uploaded file itself, which is not committed
+  to the repo per this plan's own "no large raw files in git" rule);
+  the real-file numbers above came from a one-off manual run in this
+  session, not a checked-in test. Deliberately NOT tested against any
+  of the license-unverified GitHub mirrors found in section 2.1, to
+  avoid even incidentally treating that data as trustworthy.
 - **`python/scripts/download_long_history.py`** -- wraps the real
   `histdata` package with retry/exponential-backoff, a resumable JSON
   manifest (a job already recorded `SUCCESS` with its output file still
@@ -143,7 +157,7 @@ first for any real M1 multi-year data.
   core project's zero-dependency `requirements.txt` so nobody has to
   install a scraping library just to run the existing simulators/tests.
 
-Full test suite: **117 passed** (up from 106), the 11 new tests above
+Full test suite: **122 passed** (up from 106), the 16 new tests above
 plus everything from every prior round, unaffected.
 
 ## The one exact command for someone with real network access
@@ -186,7 +200,7 @@ about it in either direction.
 - **What changed:** `python/ftmo_sim/histdata_adapter.py` (new),
   `python/scripts/download_long_history.py` (new),
   `python/requirements-long-history.txt` (new),
-  `python/tests/test_histdata_adapter.py` (new, 7 tests),
+  `python/tests/test_histdata_adapter.py` (new, 12 tests),
   `python/tests/test_download_long_history.py` (new, 4 tests),
   `docs/LONG_HISTORY_EXPERIMENT_PLAN.md` (new),
   `docs/LONG_HISTORY_REPORT.md` (this file, new). No existing simulator,

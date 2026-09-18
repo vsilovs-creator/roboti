@@ -100,16 +100,31 @@ since none was obtainable, and never presented as a strategy result.
 
 ### 2.3 Format/timezone/license specification (for whoever runs the download)
 
-- **Format:** HistData "Generic ASCII", semicolon-separated:
-  `YYYYMMDD HHMMSS;OPEN;HIGH;LOW;CLOSE;VOLUME` (Bid-only; Volume is
-  documented as always 0).
+- **Format:** two HistData export "platforms" are both supported by
+  `histdata_adapter.py`, auto-detected (`parse_histdata_m1()`) from the
+  file/ZIP-member name or, failing that, the first data line's
+  separator:
+  - **Generic ASCII** (`DAT_ASCII_*`), semicolon-separated:
+    `YYYYMMDD HHMMSS;OPEN;HIGH;LOW;CLOSE;VOLUME`.
+  - **MetaTrader** (`DAT_MT_*`), comma-separated:
+    `YYYY.MM.DD,HH:MM,OPEN,HIGH,LOW,CLOSE,VOLUME` -- confirmed directly
+    from a real user-supplied download in this session
+    (`HISTDATA_COM_MT_GBPUSD_M12019.zip`, 372,396 raw M1 rows, 60
+    duplicate timestamps counted and deduplicated, 0 non-monotonic, 0
+    OHLC-sanity violations -- the adapter's own quality report on that
+    real file, not a synthetic one).
+  Both are Bid-only; Volume is documented as always 0 in both.
 - **Timezone:** Eastern Standard Time, **WITHOUT** Daylight Saving
   adjustment -- i.e. a fixed UTC-5 offset year-round, confirmed from
   HistData's own documentation (quoted via the `histdata` PyPI package's
-  README, read directly in this session). This is emphatically NOT this
-  project's existing FTMO GMT+2/+3 EU-DST server-clock convention --
-  `histdata_adapter.py` applies ONLY this fixed EST offset, never the
-  other model, per this task's own explicit instruction.
+  README, read directly in this session) -- and applied identically to
+  BOTH platforms above, since it is a property of HistData's underlying
+  data, not of the export file syntax. This is emphatically NOT this
+  project's existing FTMO GMT+2/+3 EU-DST server-clock convention, even
+  though the MetaTrader platform's column syntax happens to be identical
+  to the project's own existing 2026-sample CSVs -- `histdata_adapter.py`
+  applies ONLY the fixed EST offset, never the other model, per this
+  task's own explicit instruction.
 - **License:** HistData.com's own terms could not be read directly in
   this session (site blocked) -- whoever downloads the real data should
   confirm HistData's current terms of use directly on their site before
@@ -307,13 +322,20 @@ SHA256 of everything ABOVE this section, reproduced with:
 sed '/^## Plan hash/,$d' docs/LONG_HISTORY_EXPERIMENT_PLAN.md | sha256sum
 ```
 
-Hash, fixed at the time this plan was written (before any download
-attempt in section 2 was made, and before `histdata_adapter.py` /
-`download_long_history.py` were written) -- this section documents the
-result deterministically to the same convention `EXPERIMENT_PLAN_2026-
-09-18.md` used; a placeholder is filled with the real value in the
-commit that introduces this file, never left as a fabricated string:
-
+Original hash, fixed at the time this plan was first written (before
+any download attempt in section 2 was made, and before
+`histdata_adapter.py` / `download_long_history.py` were written):
 ```
 86fa140c3df7b45c73b0e0b233c2b44b7f6f1b392b6f43f52635a61f7f8928be
+```
+
+Updated hash, after a real user-supplied HistData download
+(`HISTDATA_COM_MT_GBPUSD_M12019.zip`) revealed that HistData's
+"MetaTrader" export platform (comma-separated, `DAT_MT_*`) also needed
+supporting alongside "Generic ASCII" -- section 2.3's format
+specification corrected to document both, per section 3's own rule that
+a data-availability correction must be dated and made BEFORE any P/L is
+computed (no run in section 5/7 has happened at either hash):
+```
+8abf07875b03018b38747389610df4cc4ffb27e7a27afc08dce751bd851b3ea9
 ```
