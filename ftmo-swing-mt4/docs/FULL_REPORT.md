@@ -363,6 +363,29 @@ not prove any of the eight is incapable of ever working -- only that none
 worked on this specific sample, under these specific fixed parameters),
 is in `docs/STRATEGY_RESEARCH_2026-09-18.md`.
 
+## 5b. Long-history (2015-2025) comparison attempt (2026-09-18, new round) -- DATA_DOWNLOAD_NOT_RUN
+
+A follow-up task asked for the same S1-S8 comparison over 2015-2025
+(both instruments, M1) instead of the ~2-month 2026 sample above, with a
+pre-registered 2015-2022 selection / 2023-2025 holdout split. **No
+long-history P/L number exists anywhere in this project as a result --
+status `DATA_DOWNLOAD_NOT_RUN`.** Every free/public M1 data source this
+session could reach or find (HistData, Dukascopy, Kaggle, Google Drive,
+FXCM's own official candledata endpoint, Zenodo, and several others) was
+either blocked by this session's own network environment or, where a
+GitHub-hosted mirror WAS technically reachable, carried an unverified or
+unspecified license and/or insufficient coverage -- see
+`docs/LONG_HISTORY_REPORT.md` for the full evidence (every source tried,
+with the exact command and result) and
+`docs/LONG_HISTORY_EXPERIMENT_PLAN.md` for the pre-registered plan
+itself. A HistData-format M1 parser/quality-report module and a
+resumable downloader (wrapping the real, mechanically-verified
+`histdata` PyPI package) were built and unit-tested this round, ready
+for whoever has real network access to run the one documented command
+and then execute the 216 planned selection-period runs -- but nothing in
+sections 1-5 above changed, and the +2000 USD/month target remains
+exactly as unconfirmed as it was before this round.
+
 ## 6. The multiple-comparisons / overfitting problem (now worse, not better)
 
 The first round of this project ran a **demonstration** sweep (81

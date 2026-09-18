@@ -1,0 +1,11 @@
+# Extra dependency for scripts/download_long_history.py ONLY --
+# docs/LONG_HISTORY_EXPERIMENT_PLAN.md. The core simulator/risk/signal
+# modules (requirements.txt) remain pure standard library; this file is
+# separate on purpose so nobody has to install a scraping dependency
+# just to run the existing test suite or the S1-S8 simulators.
+#
+# histdata==1.1 wraps HistData.com's own "Generic ASCII" M1 download
+# flow (a plain token/form POST, no CAPTCHA -- read directly from its
+# installed source in this session, not assumed). Pulls in
+# beautifulsoup4 and requests as its own transitive dependencies.
+histdata==1.1
