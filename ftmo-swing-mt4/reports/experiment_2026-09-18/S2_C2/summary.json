@@ -1,0 +1,80 @@
+{
+  "variant": "S2",
+  "scenario": "C2",
+  "initial_balance_usd": 10000.0,
+  "net_balance_change_usd": -304.163244571866,
+  "net_balance_change_pct": -3.04163244571866,
+  "net_equity_change_usd": -304.163244571866,
+  "net_equity_change_pct": -3.04163244571866,
+  "open_positions_at_end": {},
+  "cost_breakdown_usd": {
+    "commission": 20.0,
+    "spread": 93.30000000000001,
+    "slippage": 37.599999999999994,
+    "swap": -22.236700000000006
+  },
+  "trade_count": 25,
+  "win_rate_pct": 16.0,
+  "avg_win_usd": 61.30344253416391,
+  "avg_loss_usd": -25.101919748024756,
+  "expectancy_usd_per_trade": -11.277061782874567,
+  "expectancy_r_per_trade": -0.46694045823033137,
+  "profit_factor": 0.4651774172731327,
+  "max_drawdown_from_peak_usd": 361.77441182443545,
+  "lowest_equity_usd": 9695.836755428134,
+  "worst_ftmo_day": {
+    "day": "2026-09-10",
+    "net_change_usd": -91.12066104249243
+  },
+  "working_floor_breach_count": 0,
+  "same_bar_sl_tp_ambiguous_count": 0,
+  "gap_fill_count": 0,
+  "avg_holding_time_hours": 28.707333333333334,
+  "rejected_signal_counts_by_reason": {
+    "CORRELATED_OR_PORTFOLIO_RISK_CAP": 3,
+    "SYMBOL_ALREADY_HAS_OPEN_POSITION": 6
+  },
+  "monthly": [
+    {
+      "year": 2026,
+      "month": 7,
+      "is_full_calendar_month": false,
+      "realized_usd": 21.936344642589347,
+      "floating_at_sample_end_usd": 0.0,
+      "trade_count": 6,
+      "realized_pct_of_initial_balance": 0.21936344642589348,
+      "realized_pct_of_month_start_equity": 0.21936344642589348
+    },
+    {
+      "year": 2026,
+      "month": 8,
+      "is_full_calendar_month": true,
+      "realized_usd": -180.77170768715777,
+      "floating_at_sample_end_usd": 0.0,
+      "trade_count": 14,
+      "realized_pct_of_initial_balance": -1.8077170768715776,
+      "realized_pct_of_month_start_equity": -1.8037602861426336
+    },
+    {
+      "year": 2026,
+      "month": 9,
+      "is_full_calendar_month": false,
+      "realized_usd": -123.09118152729576,
+      "floating_at_sample_end_usd": 0.0,
+      "trade_count": 5,
+      "realized_pct_of_initial_balance": -1.2309118152729577,
+      "realized_pct_of_month_start_equity": -1.2507786026164538
+    }
+  ],
+  "run_metadata": {
+    "git_sha": "a32dd6896ef211ba7bfbe532cd3d5f46184cb7ac",
+    "config_sha256": "9e3537ffea030a35882e20250d2eb8696097b950ec59c550255dba3a97a703d2",
+    "config_path": "../config/config.example.json",
+    "scenario_spread_points": {
+      "EURUSD": 20.0,
+      "GBPUSD": 30.0
+    },
+    "scenario_slippage_price": 5e-05,
+    "commission_round_turn_usd_per_lot": 5.0
+  }
+}

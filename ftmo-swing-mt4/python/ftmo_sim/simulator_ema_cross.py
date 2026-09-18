@@ -447,11 +447,20 @@ def run_h1_signal_simulation(
     return result
 
 
-def run_ema_cross_simulation(config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]]) -> EmaCrossResult:
+def run_ema_cross_simulation(
+    config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]],
+    on_opposite_signal: str = "skip", slippage_price: float = 0.0,
+) -> EmaCrossResult:
     """Runs the EMA(20/50) H1 crossover using config['strategies']['ema_cross_v1']
     -- the CHOSEN strategy going forward (2026-09-18, see config.example.json's
     `strategies.active`), rather than the strategy_ema_cross.py hardcoded
-    defaults, so changing the config actually changes the run."""
+    defaults, so changing the config actually changes the run.
+
+    `on_opposite_signal`/`slippage_price` default to S2's original
+    behaviour (skip, no slippage); pass "close_only"/"close_and_reverse"
+    for S4/S5 (same engine/config, only this mode differs) and a scenario's
+    slippage for the C2/C3 cost comparison -- see
+    docs/EXPERIMENT_PLAN_2026-09-18.md sections 2/3."""
     p = config.ema_cross_strategy
     engine_factory = lambda symbol: EmaCrossEngine(
         symbol,
@@ -464,6 +473,7 @@ def run_ema_cross_simulation(config: RunConfig, m1_by_symbol: dict[str, list[Ric
     return run_h1_signal_simulation(
         config, m1_by_symbol, engine_factory=engine_factory,
         enforce_session_close=p.get("enforce_session_close", False),
+        on_opposite_signal=on_opposite_signal, slippage_price=slippage_price,
     )
 
 

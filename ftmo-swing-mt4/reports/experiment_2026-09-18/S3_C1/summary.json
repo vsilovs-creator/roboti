@@ -1,0 +1,71 @@
+{
+  "variant": "S3",
+  "scenario": "C1",
+  "initial_balance_usd": 10000.0,
+  "net_balance_change_usd": -781.6971795011177,
+  "net_balance_change_pct": -7.8169717950111774,
+  "net_equity_change_usd": -781.6971795011177,
+  "net_equity_change_pct": -7.8169717950111774,
+  "open_positions_at_end": {},
+  "cost_breakdown_usd": {
+    "commission": 139.14999999999998,
+    "spread": 335.15000000000003,
+    "slippage": 0.0,
+    "swap": -62.851
+  },
+  "trade_count": 102,
+  "win_rate_pct": 22.54901960784314,
+  "avg_win_usd": 52.73023913043332,
+  "avg_loss_usd": -24.451160500013653,
+  "expectancy_usd_per_trade": -7.0475115637363945,
+  "expectancy_r_per_trade": -0.28859994603036837,
+  "profit_factor": 0.6278573882880896,
+  "max_drawdown_from_peak_usd": 842.5306328154911,
+  "lowest_equity_usd": 9218.302820498882,
+  "worst_ftmo_day": {
+    "day": "2026-08-19",
+    "net_change_usd": -285.2220146242489
+  },
+  "working_floor_breach_count": 0,
+  "same_bar_sl_tp_ambiguous_count": 0,
+  "gap_fill_count": 1,
+  "avg_holding_time_hours": 10.056045751633988,
+  "rejected_signal_counts_by_reason": {
+    "CORRELATED_OR_PORTFOLIO_RISK_CAP": 20,
+    "PRE_TRADE_PROJECTED_EQUITY_BREACH": 107,
+    "SYMBOL_ALREADY_HAS_OPEN_POSITION": 65
+  },
+  "monthly": [
+    {
+      "year": 2026,
+      "month": 7,
+      "is_full_calendar_month": false,
+      "realized_usd": -283.42569730917876,
+      "floating_at_sample_end_usd": 0.0,
+      "trade_count": 37,
+      "realized_pct_of_initial_balance": -2.8342569730917875,
+      "realized_pct_of_month_start_equity": -2.8342569730917875
+    },
+    {
+      "year": 2026,
+      "month": 8,
+      "is_full_calendar_month": true,
+      "realized_usd": -435.42048219193316,
+      "floating_at_sample_end_usd": 0.0,
+      "trade_count": 65,
+      "realized_pct_of_initial_balance": -4.354204821919332,
+      "realized_pct_of_month_start_equity": -4.481213940507322
+    }
+  ],
+  "run_metadata": {
+    "git_sha": "a32dd6896ef211ba7bfbe532cd3d5f46184cb7ac",
+    "config_sha256": "9e3537ffea030a35882e20250d2eb8696097b950ec59c550255dba3a97a703d2",
+    "config_path": "../config/config.example.json",
+    "scenario_spread_points": {
+      "EURUSD": 10.0,
+      "GBPUSD": 15.0
+    },
+    "scenario_slippage_price": 0.0,
+    "commission_round_turn_usd_per_lot": 5.0
+  }
+}

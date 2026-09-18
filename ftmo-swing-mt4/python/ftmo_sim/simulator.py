@@ -73,7 +73,14 @@ def _direction_bucket(direction: str) -> str:
     return "LONG_USD" if direction == "SELL" else "SHORT_USD"
 
 
-def run_simulation(config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]]) -> SimulationResult:
+def run_simulation(
+    config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]], slippage_price: float = 0.0,
+) -> SimulationResult:
+    """`slippage_price` (>=0.0): a scenario's adverse execution slippage,
+    threaded through every fill in this function (entries and
+    SL-triggered exits/forced closes) -- see
+    docs/EXPERIMENT_PLAN_2026-09-18.md section 3. Defaults to 0.0, matching
+    every call site before this parameter existed."""
     symbols = list(m1_by_symbol.keys())
     m5_by_symbol = {s: resample(m1_by_symbol[s], 5) for s in symbols}
     h1_by_symbol = {s: resample(m1_by_symbol[s], 60) for s in symbols}
@@ -148,7 +155,7 @@ def run_simulation(config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]])
             pos = open_positions[s]
             trade = simulate_exit(
                 pos, [bar], config.symbols[s], config.raw["account"]["currency"],
-                spreads[s], config.commission_round_turn_usd_per_lot,
+                spreads[s], config.commission_round_turn_usd_per_lot, slippage_price=slippage_price,
             )
             if trade is not None:
                 balance += trade.net_pnl_usd
@@ -190,7 +197,7 @@ def run_simulation(config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]])
                 trade = force_close(
                     open_positions[s], fill, t, "RISK_STOP",
                     config.symbols[s], config.raw["account"]["currency"],
-                    config.commission_round_turn_usd_per_lot,
+                    config.commission_round_turn_usd_per_lot, slippage_price=slippage_price,
                 )
                 balance += trade.net_pnl_usd
                 result.closed_trades.append(trade)
@@ -227,7 +234,10 @@ def run_simulation(config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]])
             # requires risk to be recomputed from the real execution price,
             # since ignoring the spread here would understate the true risk
             # by exactly the spread on every trade (worse the tighter the SL).
-            transacted_entry = fill_bar.open + spreads[sig.symbol] if sig.direction == "BUY" else fill_bar.open
+            transacted_entry = (
+                fill_bar.open + spreads[sig.symbol] + slippage_price if sig.direction == "BUY"
+                else fill_bar.open - slippage_price
+            )
             sl_distance = (transacted_entry - sig.sl_price) if sig.direction == "BUY" else (sig.sl_price - transacted_entry)
             if sl_distance <= 0:
                 result.skipped_signals.append(SkippedSignal(sig, "EXECUTION_PRICE_INVALIDATED_SL"))
@@ -287,6 +297,7 @@ def run_simulation(config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]])
             pos = open_position(
                 f"idea-{idea_counter}", sig.symbol, sig.direction, lots, fill_bar.open,
                 sig.sl_price, sig.tp_price, fill_bar.open_time_utc, spreads[sig.symbol], actual_risk,
+                slippage_price=slippage_price,
             )
             open_positions[sig.symbol] = pos
             newly_opened[sig.symbol] = fill_bar
@@ -298,7 +309,7 @@ def run_simulation(config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]])
                 continue
             trade = simulate_exit(
                 pos, [fill_bar], config.symbols[s], config.raw["account"]["currency"],
-                spreads[s], config.commission_round_turn_usd_per_lot,
+                spreads[s], config.commission_round_turn_usd_per_lot, slippage_price=slippage_price,
             )
             if trade is not None:
                 balance += trade.net_pnl_usd
