@@ -113,8 +113,12 @@ first for any real M1 multi-year data.
   own README read in this session) into this project's existing
   `RichCandle`/UTC shape, plus a `DataQualityReport` (duplicate/
   non-monotonic/OHLC-sanity counts, weekend-row count, first/last
-  timestamp, source and normalized SHA256). Tested against 5 hand-
-  written synthetic fixtures in `python/tests/test_histdata_adapter.py`
+  timestamp, source and normalized SHA256). Accepts HistData's raw
+  `.zip` download directly (unzips the one CSV member in-memory) as well
+  as an already-extracted `.csv`, so a downloaded file can be dropped
+  straight into `data/raw/long_history/` with no manual unzip step.
+  Tested against 7 hand-written synthetic fixtures (including one real
+  in-memory ZIP) in `python/tests/test_histdata_adapter.py`
   -- deliberately NOT tested against any of the license-unverified
   GitHub mirrors found in section 2.1, to avoid even incidentally
   treating that data as trustworthy.
@@ -139,7 +143,7 @@ first for any real M1 multi-year data.
   core project's zero-dependency `requirements.txt` so nobody has to
   install a scraping library just to run the existing simulators/tests.
 
-Full test suite: **115 passed** (up from 106), the 9 new tests above
+Full test suite: **117 passed** (up from 106), the 11 new tests above
 plus everything from every prior round, unaffected.
 
 ## The one exact command for someone with real network access
@@ -154,11 +158,14 @@ python3 python/scripts/download_long_history.py \
 This downloads 22 ZIP files (2 pairs x 11 years) directly from
 histdata.com into `data/raw/long_history/`, with a manifest recording
 each file's SHA256 and status, resumable if interrupted. After that:
-unzip each file (HistData ships one CSV per ZIP), run each through
-`ftmo_sim.histdata_adapter.parse_histdata_generic_ascii_m1()` to get
-UTC `RichCandle` rows plus a quality report, confirm both instruments'
-2015-2025 coverage overlaps as the plan's section 2 requires, and only
-THEN proceed to section 5's 216 selection-period runs. **Large raw/ZIP
+run each ZIP directly through
+`ftmo_sim.histdata_adapter.parse_histdata_generic_ascii_m1()` (it
+unzips in-memory and reads HistData's one CSV member itself -- no
+manual unzip step needed; it also accepts an already-extracted `.csv`
+if one exists) to get UTC `RichCandle` rows plus a quality report,
+confirm both instruments' 2015-2025 coverage overlaps as the plan's
+section 2 requires, and only THEN proceed to section 5's 216
+selection-period runs. **Large raw/ZIP
 files must not be committed to this GitHub repository** (per the task's
 own instruction) -- keep them local or in whatever storage the next
 session has, and commit only the code, the plan, the manifests, and the
@@ -179,7 +186,7 @@ about it in either direction.
 - **What changed:** `python/ftmo_sim/histdata_adapter.py` (new),
   `python/scripts/download_long_history.py` (new),
   `python/requirements-long-history.txt` (new),
-  `python/tests/test_histdata_adapter.py` (new, 5 tests),
+  `python/tests/test_histdata_adapter.py` (new, 7 tests),
   `python/tests/test_download_long_history.py` (new, 4 tests),
   `docs/LONG_HISTORY_EXPERIMENT_PLAN.md` (new),
   `docs/LONG_HISTORY_REPORT.md` (this file, new). No existing simulator,

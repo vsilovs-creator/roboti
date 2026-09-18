@@ -11,6 +11,7 @@ which is what these tests do.
 """
 from __future__ import annotations
 
+import zipfile
 from datetime import datetime, timezone
 
 from ftmo_sim.histdata_adapter import parse_histdata_generic_ascii_m1
@@ -83,3 +84,37 @@ def test_weekday_row_count_and_sha256_are_reported(tmp_path):
     assert len(report.normalized_sha256) == 64
     assert report.first_timestamp_utc == rows[0].open_time_utc.isoformat()
     assert report.last_timestamp_utc == rows[-1].open_time_utc.isoformat()
+
+
+def test_zip_file_is_parsed_transparently_without_manual_unzipping(tmp_path):
+    """HistData's own download is a .zip (one CSV + one status-report
+    text file inside) -- this adapter must accept that .zip directly, so
+    a user dropping the raw downloaded file into the data folder doesn't
+    need an extra manual unzip step."""
+    csv_lines = [
+        "20150102 000000;1.10000;1.10010;1.09990;1.10005;0",
+        "20150102 000100;1.10005;1.10015;1.09995;1.10010;0",
+    ]
+    zip_path = tmp_path / "DAT_ASCII_EURUSD_M1_2015.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("DAT_ASCII_EURUSD_M1_2015.csv", "\n".join(csv_lines) + "\n")
+        zf.writestr("DAT_ASCII_EURUSD_M1_2015_status.txt", "some status/gap report, not CSV data")
+
+    rows, report = parse_histdata_generic_ascii_m1(zip_path)
+    assert len(rows) == 2
+    assert rows[0].open_time_utc == datetime(2015, 1, 2, 5, 0, tzinfo=timezone.utc)
+    assert report.row_count_raw == 2
+    assert report.source_path == str(zip_path)
+
+
+def test_zip_with_no_or_multiple_csv_members_raises_instead_of_guessing(tmp_path):
+    zip_path = tmp_path / "ambiguous.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("a.csv", "20150102 000000;1.1;1.1;1.1;1.1;0\n")
+        zf.writestr("b.csv", "20150102 000000;1.2;1.2;1.2;1.2;0\n")
+
+    try:
+        parse_histdata_generic_ascii_m1(zip_path)
+        assert False, "expected a ValueError for an ambiguous ZIP, not a silent guess"
+    except ValueError as exc:
+        assert "a.csv" in str(exc) and "b.csv" in str(exc)

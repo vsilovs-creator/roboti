@@ -29,6 +29,7 @@ no volume field).
 from __future__ import annotations
 
 import hashlib
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -90,14 +91,39 @@ def _sha256_of_rows(rows: list[RichCandle]) -> str:
     return h.hexdigest()
 
 
+def _read_lines(path: Path) -> list[str]:
+    """Returns the raw CSV lines for one HistData export -- transparently
+    unzips a `.zip` (HistData's own download format: one ZIP per
+    pair/year, containing exactly one Generic-ASCII CSV plus a status
+    report text file, per the `histdata` PyPI package's own documented
+    behavior) or reads a `.csv` directly if it was already extracted.
+    Never guesses which member is the data file: a ZIP with zero or more
+    than one `.csv` member raises immediately rather than silently
+    picking one."""
+    if path.suffix.lower() == ".zip":
+        with zipfile.ZipFile(path) as zf:
+            csv_members = [n for n in zf.namelist() if n.lower().endswith(".csv")]
+            if len(csv_members) != 1:
+                raise ValueError(
+                    f"{path}: expected exactly one .csv member in the ZIP, found {csv_members!r}"
+                )
+            with zf.open(csv_members[0]) as f:
+                return f.read().decode("utf-8").splitlines()
+    with path.open(newline="") as f:
+        return f.read().splitlines()
+
+
 def parse_histdata_generic_ascii_m1(path: Path) -> tuple[list[RichCandle], DataQualityReport]:
-    """Parses one HistData "Generic ASCII" M1 CSV (semicolon-separated,
+    """Parses one HistData "Generic ASCII" M1 export (semicolon-separated,
     `YYYYMMDD HHMMSS;O;H;L;C;V`, EST-without-DST) into UTC `RichCandle`
     rows, PLUS a `DataQualityReport` -- never silently drops/normalizes a
-    problem row without counting it. A trailing/leading blank line is
-    skipped; anything else that fails to parse raises (never silently
-    skipped -- a malformed HistData export is a reason to stop, not to
-    quietly lose rows).
+    problem row without counting it. `path` may be either the extracted
+    `.csv` directly, OR the original `.zip` exactly as HistData serves it
+    (unzipped transparently in-memory, never written back to disk) --
+    the raw HistData download need not be unpacked first. A trailing/
+    leading blank line is skipped; anything else that fails to parse
+    raises (never silently skipped -- a malformed HistData export is a
+    reason to stop, not to quietly lose rows).
 
     Row handling, in order:
     1. Parse timestamp (EST fixed offset -> UTC) and OHLC floats.
@@ -119,18 +145,17 @@ def parse_histdata_generic_ascii_m1(path: Path) -> tuple[list[RichCandle], DataQ
     source_sha256 = _sha256_of_file(path)
     raw_rows: list[tuple[datetime, float, float, float, float]] = []
     ohlc_violations = 0
-    with path.open(newline="") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            date_time_s, o_s, h_s, l_s, c_s, _v_s = line.split(";")
-            naive = datetime.strptime(date_time_s, "%Y%m%d %H%M%S")
-            utc_dt = (naive + _HISTDATA_EST_TO_UTC).replace(tzinfo=timezone.utc)
-            o, h, l, c = float(o_s), float(h_s), float(l_s), float(c_s)
-            if not (l <= min(o, c) <= max(o, c) <= h):
-                ohlc_violations += 1
-            raw_rows.append((utc_dt, o, h, l, c))
+    for line in _read_lines(path):
+        line = line.strip()
+        if not line:
+            continue
+        date_time_s, o_s, h_s, l_s, c_s, _v_s = line.split(";")
+        naive = datetime.strptime(date_time_s, "%Y%m%d %H%M%S")
+        utc_dt = (naive + _HISTDATA_EST_TO_UTC).replace(tzinfo=timezone.utc)
+        o, h, l, c = float(o_s), float(h_s), float(l_s), float(c_s)
+        if not (l <= min(o, c) <= max(o, c) <= h):
+            ohlc_violations += 1
+        raw_rows.append((utc_dt, o, h, l, c))
 
     row_count_raw = len(raw_rows)
     seen_times: set = set()
