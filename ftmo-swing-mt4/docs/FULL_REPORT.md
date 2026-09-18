@@ -363,28 +363,47 @@ not prove any of the eight is incapable of ever working -- only that none
 worked on this specific sample, under these specific fixed parameters),
 is in `docs/STRATEGY_RESEARCH_2026-09-18.md`.
 
-## 5b. Long-history (2015-2025) comparison attempt (2026-09-18, new round) -- DATA_DOWNLOAD_NOT_RUN
+## 5b. Long-history (2015-2025) comparison (2026-09-18, new round) -- Part A complete, no candidate found
 
 A follow-up task asked for the same S1-S8 comparison over 2015-2025
 (both instruments, M1) instead of the ~2-month 2026 sample above, with a
-pre-registered 2015-2022 selection / 2023-2025 holdout split. **No
-long-history P/L number exists anywhere in this project as a result --
-status `DATA_DOWNLOAD_NOT_RUN`.** Every free/public M1 data source this
-session could reach or find (HistData, Dukascopy, Kaggle, Google Drive,
-FXCM's own official candledata endpoint, Zenodo, and several others) was
-either blocked by this session's own network environment or, where a
-GitHub-hosted mirror WAS technically reachable, carried an unverified or
-unspecified license and/or insufficient coverage -- see
-`docs/LONG_HISTORY_REPORT.md` for the full evidence (every source tried,
-with the exact command and result) and
-`docs/LONG_HISTORY_EXPERIMENT_PLAN.md` for the pre-registered plan
-itself. A HistData-format M1 parser/quality-report module and a
-resumable downloader (wrapping the real, mechanically-verified
-`histdata` PyPI package) were built and unit-tested this round, ready
-for whoever has real network access to run the one documented command
-and then execute the 216 planned selection-period runs -- but nothing in
-sections 1-5 above changed, and the +2000 USD/month target remains
-exactly as unconfirmed as it was before this round.
+pre-registered 2015-2022 selection / 2023-2025 holdout split. This
+session's own network environment could not reach HistData, Dukascopy,
+or any other canonical/alternative M1 source (full evidence in
+`docs/LONG_HISTORY_REPORT.md`); the account owner then supplied the real
+2015-2025 EURUSD+GBPUSD M1 data directly (chat upload, then a git push
+to `data/raw/` on `main`), independently verified in this session (0
+OHLC sanity violations, 0 non-monotonic timestamps across 8,084,870
+rows). All 24 of the pre-registered plan's section 5.A runs (continuous
+10,000 USD account, S1-S8 x C1-C3, 2015-2022) were then executed for
+real.
+
+**Every one of the 24 runs is net negative, in every scenario --
+per the plan's own required wording, šajā fiksēto stratēģiju atlasē
+kandidāts nav atrasts (no candidate was found).** A structural finding
+worth flagging on its own: every variant's lowest observed equity sits
+within ~20 USD of the confirmed 9200 static total working floor, after
+which the pre-trade projected-equity gate (deliberately more
+conservative than the actual floor) blocks nearly all further trading
+for most of the remaining multi-year window -- the SAME "one early
+period dominates the headline loss" failure mode this project already
+documented for S7 alone on the short 2026 sample, now observed for ALL
+EIGHT variants at 8-year scale. This is not a simulator bug (every
+F1-F5/R1-R2 fix applies unchanged); it means a single long continuous
+account against this tight fixed floor cannot cleanly distinguish
+between negative-expectancy strategies once they converge near it. No
+risk floor or cap was loosened to avoid this outcome. Section 5.B's 192
+fixed-year-start diagnostic runs were NOT executed -- they need a new
+simulator capability (isolated per-year indicator warm-up without
+trading) that does not exist yet, deliberately not rushed into place;
+5.A's own result already establishes "no candidate" regardless, since
+qualification requires 5.A to be positive first. No section 7 holdout
+was opened (correctly -- no candidate exists to test). Full detail,
+the 24-run table, and the structural finding's evidence are in
+`docs/LONG_HISTORY_REPORT.md`; the plan itself is in
+`docs/LONG_HISTORY_EXPERIMENT_PLAN.md`. The +2000 USD/month target
+remains unconfirmed, now more strongly contradicted by real 8-year
+evidence than by the original ~2-month sample alone.
 
 ## 6. The multiple-comparisons / overfitting problem (now worse, not better)
 

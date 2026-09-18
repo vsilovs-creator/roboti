@@ -1,15 +1,25 @@
 # Long-history (2015-2025) fixed-strategy comparison -- outcome report
 
-**Status update (same day, continued session): `DATA_DOWNLOAD_NOT_RUN` no
-longer applies.** This session's own network environment never became
+**Final status (same day, continued session): Part A COMPLETE --
+`šajā fiksēto stratēģiju atlasē kandidāts nav atrasts` (no candidate was
+found in this fixed-strategy selection).** `DATA_DOWNLOAD_NOT_RUN` no
+longer applies: this session's own network environment never became
 reachable to HistData/Dukascopy/etc. (see the "Original finding" section
-below, kept intact and unedited as the historical record) -- but the
+below, kept intact and unedited as the historical record), but the
 account owner supplied the real 2015-2025 EURUSD+GBPUSD M1 data directly
-(chat upload, then a direct push of the full 22-file set to
-`data/raw/` on `main`), bypassing this session's network restriction
-entirely via a channel this session COULD already reach (git). See
-"Real data received and verified" below for the independent quality
-audit, and "Part A results" for the actual selection-period run.
+(chat upload, then a direct push of the full 22-file set to `data/raw/`
+on `main`), bypassing this session's network restriction entirely via a
+channel this session COULD already reach (git). All 24 of section 5.A's
+continuous-account runs (2015-2022, S1-S8 x C1-C3) were executed and
+are EVERY ONE net negative -- see "Part A results" below for the full
+table, the exact numbers, and a structural finding about WHY every
+variant converges to a similar loss (a fixed 9200 USD floor + a
+deliberately conservative pre-trade gate, not a simulator bug). Section
+5.B (192 fixed-year-start diagnostic runs) was NOT run -- it needs a new
+simulator capability (isolated per-year indicator warm-up) that does not
+exist yet and was not rushed into place; see that section for exactly
+what is needed next. No candidate reached section 7's holdout; 2023-2025
+data remains unopened for any P/L purpose.
 
 ---
 
@@ -253,45 +263,178 @@ re-run afterward to confirm every number is byte-identical (only the
 `git_sha` metadata field differed) -- a pure no-op for that report, a
 real fix for this one.
 
-## Part A results (continuous account, 2015-2022, 24 runs) -- IN PROGRESS
+## Part A results (continuous account, 2015-2022, 24 runs) -- COMPLETE
 
-`scripts/run_long_history_experiment.py` (new this round, reusing the
-2026-sample script's scenario/cost/report logic verbatim by import) is
-running the 24 continuous-account runs (S1-S8 x C1-C3, 2015-01-01 to
-2022-12-31, both symbols on one 10,000 USD account per run, per
-`docs/LONG_HISTORY_EXPERIMENT_PLAN.md` section 5.A) as this document is
-being written. Loading ~3M M1 rows/symbol/8yr takes ~90s; each run's own
-duration varies by variant. Results will be added to this section (and
-to `docs/LONG_HISTORY_EXPERIMENT_PLAN.md` section 6's qualification
-check) once complete -- no number is asserted here ahead of the actual
-run finishing. Part B (192 fixed-year-start diagnostic runs) has not
-been started; it is a separate, larger undertaking layered on the same
-verified data and code.
+All 24 runs (`scripts/run_long_history_experiment.py`, ~16 minutes
+total) finished successfully, no crash, no partial run. Full
+machine-readable output in
+`reports/long_history_selection_2015_2022/<variant>_<scenario>/`.
+
+| Variant | C1 net USD | C1 trades | C1 PF | C2 net USD | C3 net USD | Lowest equity (C1) | Last month with any trade (C1) |
+|---|---|---|---|---|---|---|---|
+| S1 | -798.97 | 111 | 0.59 | -777.70 | -791.05 | 9201.03 | 2015-09 |
+| S2 | -794.08 | 105 | 0.62 | -793.81 | -785.89 | 9205.92 | 2016-06 |
+| S3 | -785.05 | 358 | 0.88 | -785.49 | -784.42 | 9209.22 | 2016-07 |
+| S4 | -779.71 | 102 | 0.60 | -784.30 | -793.45 | 9214.66 | 2016-01 |
+| S5 | -781.88 | 110 | 0.62 | -795.08 | -784.77 | 9218.12 | 2015-07 |
+| S6 | -784.63 | 1298 | 0.98 | -794.87 | -794.90 | 9212.46 | 2019-10 |
+| S7 | -791.60 | 405 | 0.88 | -787.84 | -792.98 | 9208.40 | 2022-02 |
+| S8 | -785.42 | 1356 | 0.93 | -782.96 | -795.35 | 9214.58 | 2017-02 |
+
+**Every one of the 24 runs is net negative, in every scenario.**
+`working_floor_breach_count` and `independently_recomputed_floor_breach_days`
+are BOTH 0 for all 24 runs -- the static total working floor (9200) was
+never actually breached by any variant, in the strict sense of the
+account being stopped out.
+
+### A structural finding that changes what this result actually means
+
+Look at the "lowest equity" column: **every single variant's lowest
+observed equity sits within about 20 USD of the 9200 static total
+working floor** (9201.03 to 9218.12 -- a spread of only 17 USD across
+eight structurally different strategies). And look at the "last month
+with any trade" column: most variants stop trading ENTIRELY within 1-2
+years of the 8-year window and never resume -- S1's last trade is
+2015-09 (month 9 of 96), S5's is 2015-07 (month 7), S4's is 2016-01
+(month 13); even the two most active variants (S6, S8, both with
+1000+ trades) go silent by 2019-10 and 2017-02 respectively, leaving
+years of the remaining sample with zero activity. Directly confirmed
+from every run's own `rejected_signal_counts_by_reason`: S1 rejected
+1,312 signals, S7 rejected 20,798, purely for
+`PRE_TRADE_PROJECTED_EQUITY_BREACH` -- the pre-trade worst-case-equity
+gate (deliberately MORE conservative than the actual floor, by design,
+per `docs/FULL_REPORT.md` section 4) keeps blocking every new entry
+once the account sits this close to the floor, even though the account
+never actually gets stopped out.
+
+**What this means:** with a SINGLE continuous 10,000 USD account and
+the project's confirmed 9200 static floor (only an 800 USD / 8% buffer
+from the starting balance), EVERY ONE of these eight strategies drifts
+down to within ~20 USD of that floor early in the 8-year window and
+then gets effectively frozen by the pre-trade gate for most of the
+remaining years -- this is the SAME failure mode
+`docs/STRATEGY_RESEARCH_2026-09-18.md` already documented for S7 alone
+on the ~2-month 2026 sample ("S7's headline loss is effectively a
+ONE-MONTH result"), now observed for ALL EIGHT variants at 8-year
+scale. The practical consequence: **these 24 numbers are not a clean
+measurement of "how good is this strategy over 8 years" -- they are
+dominated by how fast each account statistically walked itself down
+near a tight, fixed floor, after which the test effectively stopped
+measuring anything.** A strategy that might have a genuinely different
+long-run edge than another could still land at a similar final number
+here purely because both hit the same floor-and-freeze wall, just at
+different speeds. This is not a simulator bug (the floor logic,
+pre-trade gate, and account accounting are all the same
+already-audited, regression-tested code as every prior round -- F1-F5,
+R1-R2 apply unchanged) -- it is a genuine property of testing eight
+persistently-negative-expectancy strategies against a tight fixed floor
+over a long continuous window, and it is reported here rather than
+smoothed over.
+
+**No strategy parameter, risk floor, or cap was loosened to avoid this
+outcome or to produce a better-looking number** -- per the task's
+explicit instruction, the existing floors/caps are used exactly as
+confirmed, not adjusted because this round's result is unfavorable.
+
+### Verdict for Part A, per section 6's qualification criteria
+
+Criterion 1 ("nepārtrauktajā... gan C1, gan C2 pabeidz periodu bez
+kopējā darba stop un ar pozitīvu gala neto equity izmaiņu") requires a
+POSITIVE net equity change in both C1 and C2. **Every one of the eight
+variants fails this criterion in every scenario** -- there is no
+variant left that criteria 2-4 could still qualify, since qualification
+requires ALL FOUR criteria together. Per the plan's own required
+wording: **šajā fiksēto stratēģiju atlasē kandidāts nav atrasts** (no
+candidate was found in this fixed-strategy selection). No variant is
+picked as a "least-bad" placeholder. 2023-2025 data has NOT been opened
+for any strategy P/L purpose (per section 3's holdout-blindness rule)
+and remains untouched for that purpose.
+
+### Part B (192 fixed-year-start runs) -- NOT RUN this round, and why
+
+Section 5.B requires each year's own run to warm up its indicators from
+the PRECEDING year's data WITHOUT trading during warm-up
+("warm-up netirgo"). The existing simulators
+(`simulator.py`/`simulator_ema_cross.py`/`simulator_m30_signal.py`) have
+NO built-in mechanism to feed a strategy engine prior-year bars for pure
+indicator priming while suppressing entries during that priming window
+-- every simulator's per-tick loop treats every bar in its input as a
+potential trading instant from the very first timestamp. Building this
+properly (a real `warmup_m1_by_symbol` parameter, verified with its own
+regression test showing a warm-up bar produces indicator state but never
+a trade) is a genuine new capability, not a config flag -- rushing an
+approximate version in the same sitting that already produced Part A's
+result risked exactly the kind of quietly-wrong shortcut this project's
+audit history (F1-F5, R1-R2) exists to catch. It is the clear, well-
+defined next task, not silently skipped: **DATA is ready (same verified
+2015-2025 files), the account-level logic is unchanged from Part A's
+already-run code, and only the warm-up-isolation feature is missing.**
+Given Part A already establishes "no candidate found" on its own
+(section 6 requires criterion 1 from Part A to hold, which it does not,
+for any variant), Part B's results could not change that verdict, but
+they remain useful diagnostic information (year-by-year sensitivity, per
+section 8's own reporting requirements) worth building properly in a
+follow-up round.
+
+## What this means for the 2000 USD/month target (real data, final)
+
+**Still unconfirmed -- and now more strongly contradicted than before.**
+None of the eight strategies reaches a positive net result over the
+FULL real 2015-2022 continuous window, let alone +2000 USD in any full
+calendar month; most variants stop generating any trades at all within
+1-3 years of an 8-year window (see the structural finding above), so
+the great majority of the sample's calendar months show zero activity,
+not a target-missing-by-a-little result. This is real 8-year evidence,
+not the ~2-month 2026 sample's thinner base -- and it points the same
+direction that sample already did.
 
 ## Handoff note (for Codex, or whoever reviews this round next)
 
-- **Commit:** this round's commit on `github.com/vsilovs-creator/roboti`,
-  branch as pushed (see `git log`), starting from `e95743b`.
-- **What changed:** `python/ftmo_sim/histdata_adapter.py` (new),
-  `python/scripts/download_long_history.py` (new),
-  `python/requirements-long-history.txt` (new),
-  `python/tests/test_histdata_adapter.py` (new, 12 tests),
-  `python/tests/test_download_long_history.py` (new, 4 tests),
-  `docs/LONG_HISTORY_EXPERIMENT_PLAN.md` (new),
-  `docs/LONG_HISTORY_REPORT.md` (this file, new). No existing simulator,
-  metrics, or order-execution file was touched -- this round is
-  additive, data-infrastructure-only.
-- **Actually executed this round:** the source-reachability tests above
-  (all real, all with exact commands/output shown), the 9 new unit
-  tests (all real, all passing), the full 115-test suite (real, all
-  passing).
-- **NOT executed this round:** any of the 216 planned selection-period
-  runs (section 5), any holdout run (section 7), any candidate
-  selection, any MQL4 compile/run.
-- **Known limitation carried forward:** even once real HistData/
-  Dukascopy data is obtained, the same Bid-only-M1/no-true-tick-path
-  caveat this project has stated since its first audit round still
+- **Commit:** this round's commits on `github.com/vsilovs-creator/roboti`,
+  branch `long-history-data-infra` (see `git log`), starting from
+  `e95743b`, merged with the account owner's own direct push of the real
+  2015-2025 data to `main`.
+- **What changed (code/infra):** `python/ftmo_sim/histdata_adapter.py`
+  (new -- HistData Generic-ASCII AND MetaTrader platform parsing,
+  auto-detected, ZIP-transparent), `python/scripts/download_long_history.py`
+  (new, unused in the end since data arrived via a different channel, kept
+  for future reproducibility), `python/scripts/run_long_history_experiment.py`
+  (new -- Part A's actual runner), `python/requirements-long-history.txt`
+  (new), 4 new/updated test files (23 new tests total: 12 adapter, 4
+  downloader, 2 signal-CSV-shape, 2 for the write_signals_csv fix's own
+  regression coverage, plus the fix itself in
+  `scripts/run_experiment_2026-09-18.py`). No existing SIMULATOR,
+  METRICS, or ORDER-EXECUTION file was touched -- every F1-F5/R1-R2 fix
+  from prior rounds applies completely unchanged to this round's runs.
+- **What changed (data):** `data/raw/DAT_MT_{EURUSD,GBPUSD}_M1_{2015..2025}.csv`
+  (+ HistData's own `.txt` status reports), 22 files, ~437MB, pushed
+  directly by the account owner to `main` (not by this session).
+- **What changed (results):** `reports/long_history_selection_2015_2022/`
+  -- all 24 of section 5.A's runs, full machine-readable output per run.
+- **Actually executed this round:** the source-reachability tests (all
+  real, exact commands/output shown), 23 new unit tests (all real, all
+  passing), the full 124-test suite (real, all passing), the independent
+  data-quality audit of all 22 real files (real, 8,084,870 rows, 0 OHLC
+  violations, 0 non-monotonic), **all 24 of section 5.A's continuous-
+  account runs (real, ~16 minutes, all 24 net negative)**.
+- **NOT executed this round:** section 5.B's 192 fixed-year-start runs
+  (needs new warm-up-isolation simulator support, not built -- see "Part
+  B" above for exactly what), any section 7 holdout run (correctly --
+  5.A already disqualifies every variant, so no candidate exists to open
+  2023-2025 for), any candidate selection (none qualified), any MQL4
+  compile/run.
+- **Known limitation carried forward:** even with real HistData/
+  Dukascopy-shaped data now in hand, the same Bid-only-M1/no-true-tick-
+  path caveat this project has stated since its first audit round still
   applies -- a longer sample changes the STATISTICAL power of the
   comparison, not the INTRABAR-execution-fidelity ceiling.
-- **2000 USD/month target:** unconfirmed, unchanged, no new evidence
-  either way (see above).
+- **New limitation this round surfaced (the floor-freeze structural
+  finding):** a single long continuous account against a tight fixed
+  floor structurally caps how much a multi-year test can actually
+  distinguish between negative-expectancy strategies -- worth
+  accounting for in any future long-history experiment design (e.g. the
+  still-unbuilt Part B, which resets per year and would not share this
+  exact failure mode).
+- **2000 USD/month target:** still unconfirmed, now more strongly
+  contradicted by real 8-year evidence (see above) than by the original
+  ~2-month sample alone.
