@@ -37,6 +37,14 @@ class Position:
     tp: float | None  # None = no fixed TP (S6 Donchian) -- never a fabricated sentinel price
     entry_time_utc: object
     risk_usd_at_entry: float
+    # FIXED 2026-09-18 (Codex F5): the confirmed commission fact is "2.50
+    # USD per lot PER SIDE" -- i.e. half the round-turn commission is
+    # already incurred the instant a position opens, not only once it
+    # closes. This is what open_position() already deducted from balance
+    # at open time; a still-open position's balance/equity must reflect
+    # it, and _finalize()/the caller must not charge it a second time at
+    # close. 0.0 when commission is unconfirmed (None).
+    entry_commission_usd: float = 0.0
 
 
 @dataclass
@@ -69,6 +77,7 @@ def open_position(
     spread: float,
     risk_usd_at_entry: float,
     slippage_price: float = 0.0,
+    commission_round_turn_usd_per_lot: float | None = None,
 ) -> Position:
     """`slippage_price` (>= 0.0) models a scenario's adverse execution
     slippage on this MARKET entry fill -- section 3 of
@@ -77,15 +86,28 @@ def open_position(
     BUY leg: a BUY pays MORE (entry_price higher), a SELL receives LESS
     (entry_price lower). Defaults to 0.0 so every existing C1-shaped call
     site is unaffected unless a scenario explicitly passes a non-zero
-    value."""
+    value.
+
+    `commission_round_turn_usd_per_lot` (FIXED 2026-09-18, Codex F5): the
+    confirmed fact is 2.50 USD/lot PER SIDE (5.00 USD round-turn total) --
+    the ENTRY side is incurred right now, not only when the position
+    eventually closes. This computes that entry-side commission
+    (`entry_commission_usd`, half the round-turn per lot) so the caller
+    can deduct it from balance immediately; `None` (unconfirmed) or 0
+    contributes 0.0, never fabricated. The remaining (exit-side) leg is
+    still charged in full at close via `ClosedTrade.commission_usd`
+    (unchanged), with the caller adding back this entry leg then so the
+    two legs sum to exactly the full round-turn commission, never double
+    -charged."""
     entry_price = (
         bid_fill_price + spread + slippage_price if direction == "BUY"
         else bid_fill_price - slippage_price
     )
+    entry_commission_usd = ((commission_round_turn_usd_per_lot or 0.0) / 2.0) * lots
     return Position(
         idea_id=idea_id, symbol=symbol, direction=direction, lots=lots,
         entry_price=entry_price, sl=sl, tp=tp, entry_time_utc=entry_time_utc,
-        risk_usd_at_entry=risk_usd_at_entry,
+        risk_usd_at_entry=risk_usd_at_entry, entry_commission_usd=entry_commission_usd,
     )
 
 

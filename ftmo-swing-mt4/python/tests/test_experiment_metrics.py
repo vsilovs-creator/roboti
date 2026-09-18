@@ -2,7 +2,12 @@
 docs/EXPERIMENT_PLAN_2026-09-18.md section 4/deliverables."""
 from datetime import datetime, timedelta, timezone
 
-from ftmo_sim.experiment_metrics import monthly_realized_vs_floating, trade_cost_breakdown, worst_ftmo_day
+from ftmo_sim.experiment_metrics import (
+    daily_floor_analysis,
+    monthly_realized_vs_floating,
+    trade_cost_breakdown,
+    worst_ftmo_day,
+)
 from ftmo_sim.order_exec import ClosedTrade, Position
 from ftmo_sim.symbol_spec import SymbolSpec
 
@@ -42,18 +47,35 @@ def test_cost_breakdown_slippage_applies_to_entry_always_and_sl_exit_only():
     assert breakdown_tp["slippage_cost_usd"] == slippage * EURUSD.contract_size * 2.0 * 1
 
 
-def test_worst_ftmo_day_picks_the_most_negative_daily_change():
+def test_worst_ftmo_day_picks_the_most_negative_move_from_that_days_own_b0():
+    from ftmo_sim.time_utils import ftmo_trading_day
+
     equity_curve = [
         (BASE, 10000.0, 10000.0),
         (BASE + timedelta(hours=12), 9950.0, 9950.0),  # day 1 ends down 50
-        (BASE + timedelta(days=1, hours=1), 9900.0, 9900.0),  # day 2 opens, ends down another 50
-        (BASE + timedelta(days=1, hours=12), 10100.0, 10100.0),  # day 2 recovers to +150 net for the day
+        (BASE + timedelta(days=1, hours=1), 9900.0, 9900.0),  # day 2 opens, dips 50 more
+        (BASE + timedelta(days=1, hours=12), 10100.0, 10100.0),  # day 2 recovers to +150 net
         (BASE + timedelta(days=2, hours=1), 9500.0, 9500.0),  # day 3 -- a big -600 drop
     ]
-    result = worst_ftmo_day(equity_curve, initial_balance=10000.0)
-    from ftmo_sim.time_utils import ftmo_trading_day
-    assert result["day"] == ftmo_trading_day(BASE + timedelta(days=2, hours=1)).isoformat()
+    day1 = ftmo_trading_day(BASE).isoformat()
+    day2 = ftmo_trading_day(BASE + timedelta(days=1, hours=1)).isoformat()
+    day3 = ftmo_trading_day(BASE + timedelta(days=2, hours=1)).isoformat()
+    # FIXED 2026-09-18 (Codex F3): B0 per day comes from the simulator's own
+    # ledger, not an end-of-previous-day-equity guess -- day2's own B0 is
+    # 9950 (day1's close), day3's own B0 is 10100 (day2's close).
+    ledger = {day1: 10000.0, day2: 9950.0, day3: 10100.0}
+
+    result = worst_ftmo_day(equity_curve, initial_balance=10000.0, balance_at_midnight_by_day=ledger)
+    assert result["day"] == day3
     assert result["net_change_usd"] == 9500.0 - 10100.0
+
+    # And the true intraday LOW is what matters, not just each day's last
+    # point -- day2's own worst move (relative to its B0=9950) is the -50
+    # intraday dip to 9900, not the "+150 by day's last point" figure the
+    # old end-of-day-vs-end-of-day metric would have reported.
+    analysis = daily_floor_analysis(equity_curve, initial_balance=10000.0, balance_at_midnight_by_day=ledger)
+    by_day = {d["day"]: d for d in analysis}
+    assert by_day[day2]["worst_move_from_b0_usd"] == 9900.0 - 9950.0
 
 
 def test_monthly_realized_vs_floating_attributes_end_floating_to_last_month():
@@ -77,7 +99,7 @@ def test_monthly_realized_vs_floating_attributes_end_floating_to_last_month():
     by_month = {(m["year"], m["month"]): m for m in monthly}
     assert by_month[(2026, 8)]["realized_usd"] == 50.0
     assert by_month[(2026, 8)]["is_full_calendar_month"] is True
-    assert by_month[(2026, 8)]["floating_at_sample_end_usd"] == 0.0
+    assert by_month[(2026, 8)]["floating_at_month_end_usd"] == 0.0
     assert by_month[(2026, 9)]["realized_usd"] == -30.0
     assert by_month[(2026, 9)]["is_full_calendar_month"] is False
-    assert by_month[(2026, 9)]["floating_at_sample_end_usd"] == 20.0
+    assert by_month[(2026, 9)]["floating_at_month_end_usd"] == 20.0

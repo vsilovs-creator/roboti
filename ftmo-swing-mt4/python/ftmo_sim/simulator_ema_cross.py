@@ -72,6 +72,9 @@ class EmaCrossResult:
     # REALIZED balance only and does not include these; see final_equity.
     open_positions_at_end: dict = field(default_factory=dict)
     final_equity: float = 0.0
+    # ADDED 2026-09-18 (Codex F3): see the matching field on
+    # simulator.SimulationResult.
+    balance_at_midnight_by_day: dict = field(default_factory=dict)
 
     @property
     def total_swap_usd(self) -> float:
@@ -168,6 +171,7 @@ def run_h1_signal_simulation(
         rolled = risk_state.rollover_if_needed(today, balance)
         if rolled:
             result.risk_stop_events.append((t, "ROLLOVER", f"balance_at_midnight={balance:.2f}"))
+            result.balance_at_midnight_by_day[today.isoformat()] = balance
             night_starting_weekday = (today - timedelta(days=1)).weekday()
             for s, pos in open_positions.items():
                 swap_usd = _swap_usd_for_one_night(pos, config.symbols[s], night_starting_weekday)
@@ -175,30 +179,31 @@ def run_h1_signal_simulation(
                     balance += swap_usd
                     result.swap_ledger.append((t, s, pos.direction, pos.lots, swap_usd))
 
-        for s in list(open_positions.keys()):
-            bar = bar_by_symbol_by_time[s].get(t)
-            if bar is None:
-                continue
-            pos = open_positions[s]
-            trade = simulate_exit(
-                pos, [bar], config.symbols[s], config.raw["account"]["currency"],
-                spreads[s], config.commission_round_turn_usd_per_lot,
-                enforce_session_close=enforce_session_close, slippage_price=slippage_price,
-            )
-            if trade is not None:
-                balance += trade.net_pnl_usd
-                result.closed_trades.append(trade)
-                del open_positions[s]
+        # FIXED 2026-09-18 (Codex F2, follow-up-follow-up audit): the exit
+        # processing for pre-existing open positions used to run HERE, using
+        # THIS bar's intrabar high/low/close -- information not knowable at
+        # this bar's OPEN. Freeing an existing position's risk via that
+        # same-bar-later exit BEFORE this bar's entries are decided let a
+        # new entry use capital that, at the instant of the entry (the
+        # bar's open), had not actually been freed yet. This block is now
+        # deferred to AFTER entries (see the unified pass near the bottom
+        # of this loop, which checks every position -- pre-existing
+        # survivors and this tick's own new entries alike -- against this
+        # SAME bar in one pass).
 
-        def _floating_pnl() -> float:
+        def _mark_price(symbol: str, direction: str, use_close: bool) -> float | None:
+            bar = last_seen.get(symbol)
+            if bar is None:
+                return None
+            raw = bar.close if use_close else bar.open
+            return raw if direction == "BUY" else raw + spreads[symbol]
+
+        def _floating_pnl(use_close: bool) -> float:
             floating = 0.0
             for s, pos in open_positions.items():
-                bar = last_seen.get(s)
-                if bar is None:
+                price = _mark_price(s, pos.direction, use_close)
+                if price is None:
                     continue
-                mark_bid = bar.close
-                mark_ask = mark_bid + spreads[s]
-                price = mark_bid if pos.direction == "BUY" else mark_ask
                 sign = 1 if pos.direction == "BUY" else -1
                 floating += sign * (price - pos.entry_price) * pos.lots * config.symbols[s].contract_size
             return floating
@@ -206,18 +211,15 @@ def run_h1_signal_simulation(
         # This is the PRE-entry equity: used to gate this timestamp's new
         # entries and to evaluate the risk stop, using only what's already
         # known before any of this timestamp's own entries/closures happen
-        # (spec: decide entries from already-known events only). It is NOT
-        # the recorded equity-curve point for time t -- see "settled" below,
-        # computed once this timestamp's entries and same-bar closures have
-        # actually happened, which is the correct point to report/re-use as
-        # final_equity. FIXED 2026-09-18 (follow-up audit): the equity-curve
-        # point used to be recorded HERE, before that timestamp's own
-        # entries/closures, so a trade opened and closed within the very
-        # last timestamp of the run updated final_balance but not the
-        # already-recorded last equity-curve point -- final_equity could
-        # come back stale (e.g. still the untouched initial balance) while
-        # final_balance correctly reflected the loss.
-        equity = balance + _floating_pnl()
+        # (spec: decide entries from already-known events only) -- marked
+        # from this bar's OPEN (use_close=False), never its close, per the
+        # same causality principle as above: the close is not knowable yet
+        # at the instant these decisions are made. It is NOT the recorded
+        # equity-curve point for time t -- see "settled" below, computed
+        # once this timestamp's entries and intrabar SL/TP have actually
+        # happened (using the close), which is the correct point to report/
+        # re-use as final_equity.
+        equity = balance + _floating_pnl(use_close=False)
 
         was_stopped = risk_state.stop_active()
         risk_state.evaluate(equity, config.ftmo_limits)
@@ -225,16 +227,19 @@ def run_h1_signal_simulation(
             reason = "TOTAL_STOP" if risk_state.total_stop_active else "DAILY_STOP"
             result.risk_stop_events.append((t, reason, f"equity={equity:.2f}"))
             for s in list(open_positions.keys()):
-                bar = last_seen.get(s)
-                if bar is None:
+                fill = _mark_price(s, open_positions[s].direction, use_close=False)
+                if fill is None:
                     continue
-                fill = bar.close if open_positions[s].direction == "BUY" else bar.close + spreads[s]
                 trade = force_close(
                     open_positions[s], fill, t, "RISK_STOP",
                     config.symbols[s], config.raw["account"]["currency"],
                     config.commission_round_turn_usd_per_lot, slippage_price=slippage_price,
                 )
-                balance += trade.net_pnl_usd
+                # FIXED 2026-09-18 (Codex F5): the entry-side commission
+                # leg was already deducted at open time; add it back so
+                # net_pnl_usd's full-round-turn deduction isn't charged
+                # twice.
+                balance += trade.net_pnl_usd + trade.position.entry_commission_usd
                 result.closed_trades.append(trade)
                 del open_positions[s]
 
@@ -271,7 +276,7 @@ def run_h1_signal_simulation(
                 config.symbols[exit_symbol], config.raw["account"]["currency"],
                 config.commission_round_turn_usd_per_lot, slippage_price=0.0,
             )
-            balance += trade.net_pnl_usd
+            balance += trade.net_pnl_usd + trade.position.entry_commission_usd
             result.closed_trades.append(trade)
             del open_positions[exit_symbol]
 
@@ -317,7 +322,7 @@ def run_h1_signal_simulation(
                     spec, config.raw["account"]["currency"], config.commission_round_turn_usd_per_lot,
                     slippage_price=slippage_price,
                 )
-                balance += close_trade.net_pnl_usd
+                balance += close_trade.net_pnl_usd + close_trade.position.entry_commission_usd
                 result.closed_trades.append(close_trade)
                 del open_positions[sig.symbol]
                 if on_opposite_signal == "close_only":
@@ -332,7 +337,7 @@ def run_h1_signal_simulation(
                 # bar-close-derived mark, so this is not the section-4.1
                 # causality leak) so the reverse-entry check below sees the
                 # just-closed trade's effect, not the stale pre-close value.
-                equity = balance + _floating_pnl()
+                equity = balance + _floating_pnl(use_close=False)
 
             transacted_entry = (
                 fill_bar.open + spreads[sig.symbol] + slippage_price if sig.direction == "BUY"
@@ -384,9 +389,14 @@ def run_h1_signal_simulation(
                     # simply its full originally-sized risk.
                     remaining = pos.risk_usd_at_entry
                 else:
-                    bar = last_seen.get(other_symbol)
-                    mark = bar.close if pos.direction == "BUY" else bar.close + spreads[other_symbol]
-                    remaining = abs(mark - pos.sl) * pos.lots * config.symbols[other_symbol].contract_size
+                    # FIXED 2026-09-18 (Codex F2): mark from this bar's OPEN,
+                    # not its close -- the close is not knowable yet at the
+                    # instant this entry decision is made, and a wider mark
+                    # here (from a close that later moved favorably or
+                    # adversely) must not change whether a SIMULTANEOUS
+                    # other-symbol entry is admitted.
+                    mark = _mark_price(other_symbol, pos.direction, use_close=False)
+                    remaining = abs(mark - pos.sl) * pos.lots * config.symbols[other_symbol].contract_size if mark is not None else pos.risk_usd_at_entry
                 open_risk_views.append(OpenPositionRiskView(other_symbol, remaining, bucket))
                 open_risk_by_idea[other_symbol] = remaining
                 idea_symbol[other_symbol] = other_symbol
@@ -414,31 +424,47 @@ def run_h1_signal_simulation(
                 f"ema-idea-{idea_counter}", sig.symbol, sig.direction, lots, fill_bar.open,
                 sl_price, tp_price, fill_bar.open_time_utc, spreads[sig.symbol], actual_risk,
                 slippage_price=slippage_price,
+                commission_round_turn_usd_per_lot=config.commission_round_turn_usd_per_lot,
             )
+            # FIXED 2026-09-18 (Codex F5): book the entry-side commission now.
+            balance -= pos.entry_commission_usd
             open_positions[sig.symbol] = pos
             newly_opened[sig.symbol] = fill_bar
 
-        # Same-bar SL/TP check for anything just opened above (see comment
-        # at the top of this timestamp's block).
-        for s, fill_bar in newly_opened.items():
-            pos = open_positions.get(s)
-            if pos is None:
+        # Intrabar SL/TP for EVERY position still open at this point --
+        # pre-existing survivors from before this tick AND anything just
+        # opened by this tick's own entries alike, checked against this
+        # SAME bar in one unified pass. FIXED 2026-09-18 (Codex F2): this
+        # used to be two separate blocks -- pre-existing positions checked
+        # BEFORE entries (letting a same-bar-later exit free capital an
+        # entry decided at the bar's OPEN should not have seen yet), and
+        # only newly-opened positions checked here, after. Now every
+        # currently open position's intrabar SL/TP is deferred to here,
+        # strictly after this tick's entries, using each symbol's actual
+        # M1 bar at this timestamp (unchanged behaviour for newly-opened
+        # positions, since fill_bar IS that same bar).
+        for s in list(open_positions.keys()):
+            bar = bar_by_symbol_by_time[s].get(t)
+            if bar is None:
                 continue
+            pos = open_positions[s]
             trade = simulate_exit(
-                pos, [fill_bar], config.symbols[s], config.raw["account"]["currency"],
+                pos, [bar], config.symbols[s], config.raw["account"]["currency"],
                 spreads[s], config.commission_round_turn_usd_per_lot,
                 enforce_session_close=enforce_session_close, slippage_price=slippage_price,
             )
             if trade is not None:
-                balance += trade.net_pnl_usd
+                balance += trade.net_pnl_usd + trade.position.entry_commission_usd
                 result.closed_trades.append(trade)
                 del open_positions[s]
 
-        # Settled equity: AFTER this timestamp's own entries and same-bar
-        # closures, so the recorded point actually reflects everything that
+        # Settled equity: AFTER this timestamp's own entries and intrabar
+        # SL/TP, so the recorded point actually reflects everything that
         # happened at time t (see the long comment above `equity =` for why
         # the earlier, pre-entry value must not be the one recorded here).
-        settled_equity = balance + _floating_pnl()
+        # Marked from this bar's CLOSE (use_close=True): by this point in
+        # the timestep, the bar has conceptually fully played out.
+        settled_equity = balance + _floating_pnl(use_close=True)
         result.equity_curve.append((t, settled_equity, balance))
 
     result.final_balance = balance

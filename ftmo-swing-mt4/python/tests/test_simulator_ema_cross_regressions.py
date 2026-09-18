@@ -184,7 +184,15 @@ def test_swap_accrues_once_per_night_held_and_triples_on_wednesday():
         cfg.symbols["EURUSD"], night_starting_weekday=0,
     )
     assert result.total_swap_usd == pytest.approx(6 * one_night)
-    assert result.final_balance == pytest.approx(cfg.initial_balance + result.total_swap_usd)
+    # FIXED 2026-09-18 (Codex F5): the still-open EURUSD position's
+    # entry-side commission (2.50 USD/lot/side) was already deducted from
+    # balance at open time -- final_balance must reflect it even though
+    # the position never closes (never reaching the exit-side leg).
+    entry_commission = result.open_positions_at_end["EURUSD"].entry_commission_usd
+    assert entry_commission > 0.0
+    assert result.final_balance == pytest.approx(
+        cfg.initial_balance + result.total_swap_usd - entry_commission
+    )
 
 
 def test_same_tick_entry_risk_view_ignores_other_symbols_own_entry_bar_close():

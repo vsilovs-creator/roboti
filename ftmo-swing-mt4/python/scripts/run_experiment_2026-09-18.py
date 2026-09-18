@@ -79,12 +79,44 @@ def _config_hash(config_path: Path) -> str:
     return hashlib.sha256(config_path.read_bytes()).hexdigest()
 
 
-def run_one(variant: str, scenario: str, cfg, m1_by_symbol: dict) -> tuple:
-    """Returns (result, spread_price_by_symbol, slippage_price)."""
-    slippage = SCENARIO_SLIPPAGE_PRICE[scenario]
+def apply_scenario_to_config(cfg, scenario: str) -> str:
+    """FIXED 2026-09-18 (Codex F1): build the scenario's EFFECTIVE config by
+    actually overriding the spread the simulators read
+    (`cfg.spread_points_hypothetical`, the typed field every
+    simulator.py/simulator_ema_cross.py/simulator_m30_signal.py call site
+    uses -- `cfg.raw['costs']['spread_points_hypothetical']` kept in sync
+    too, since it is the same data by a different path). Previously
+    `run_one` only used the scenario's spread to build
+    `spread_price_by_symbol` for the REPORTED cost breakdown -- the `cfg`
+    object actually handed to the simulator kept the config file's
+    original (C1) spread regardless of scenario, so C2/C3 differed from
+    C1 only by slippage, never by spread, even though the plan and every
+    report claimed otherwise. Mutates `cfg` in place (each call site loads
+    a fresh RunConfig per run, so no cross-run state leaks) and returns a
+    SHA256 of the effective (post-override) spread config for the run's
+    reproducibility metadata."""
     spreads = SCENARIO_SPREAD_POINTS[scenario]
+    for symbol, points in spreads.items():
+        cfg.spread_points_hypothetical[symbol] = points
+        cfg.raw["costs"]["spread_points_hypothetical"][symbol] = points
+    effective = {
+        "spread_points_hypothetical": dict(cfg.spread_points_hypothetical),
+        "slippage_price": SCENARIO_SLIPPAGE_PRICE[scenario],
+        "commission_round_turn_usd_per_lot": cfg.commission_round_turn_usd_per_lot,
+    }
+    return hashlib.sha256(json.dumps(effective, sort_keys=True).encode()).hexdigest()
+
+
+def run_one(variant: str, scenario: str, cfg, m1_by_symbol: dict) -> tuple:
+    """Returns (result, spread_price_by_symbol, slippage_price).
+    `cfg` must already have had apply_scenario_to_config() applied by the
+    caller -- this function no longer computes the scenario's spread
+    itself, only reads it back off `cfg` so the reported
+    spread_price_by_symbol is guaranteed to match what the simulator
+    actually used (they are now, structurally, the same value)."""
+    slippage = SCENARIO_SLIPPAGE_PRICE[scenario]
     spread_price_by_symbol = {
-        s: spreads[s] * cfg.symbols[s].point_size for s in cfg.symbols
+        s: cfg.spread_points_hypothetical[s] * cfg.symbols[s].point_size for s in cfg.symbols
     }
 
     if variant == "S1":
@@ -184,6 +216,7 @@ def run_all(args) -> None:
     for scenario in scenarios:
         for variant in variants:
             cfg = load_config(config_path)  # fresh RunConfig per run -- no shared mutable state across runs
+            effective_config_sha = apply_scenario_to_config(cfg, scenario)
             result, spread_price_by_symbol, slippage = run_one(variant, scenario, cfg, m1_by_symbol)
 
             run_dir = out_dir / f"{variant}_{scenario}"
@@ -198,8 +231,9 @@ def run_all(args) -> None:
             metrics["run_metadata"] = {
                 "git_sha": git_sha,
                 "config_sha256": config_sha,
+                "effective_scenario_config_sha256": effective_config_sha,
                 "config_path": str(config_path),
-                "scenario_spread_points": SCENARIO_SPREAD_POINTS[scenario],
+                "scenario_spread_points": dict(cfg.spread_points_hypothetical),
                 "scenario_slippage_price": slippage,
                 "commission_round_turn_usd_per_lot": cfg.commission_round_turn_usd_per_lot,
             }

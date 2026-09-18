@@ -53,82 +53,174 @@ def trade_cost_breakdown(trade, spec, spread_price: float, slippage_price: float
     }
 
 
-def worst_ftmo_day(equity_curve: list[tuple], initial_balance: float) -> dict:
-    """The FTMO-calendar-day (Europe/Prague) with the most negative
-    end-of-day-minus-start-of-day SETTLED equity change -- the same
-    quantity the daily working floor is measured against (balance/equity
-    at the Prague-midnight boundary), not a true intraday minimum (this
-    project's own M1-resolution equity curve makes an exact intraday
-    minimum computable too, but the daily-floor-relevant quantity is the
-    day's net change, which is what is reported here)."""
+def daily_floor_analysis(
+    equity_curve: list[tuple],
+    initial_balance: float,
+    balance_at_midnight_by_day: dict | None = None,
+    daily_working_buffer_offset_usd: float | None = None,
+    static_total_working_floor_usd: float | None = None,
+) -> list[dict]:
+    """FIXED 2026-09-18 (Codex F3): per FTMO-calendar-day (Europe/Prague),
+    using that day's OWN B0 (balance_at_midnight, from the simulator's
+    persisted per-day ledger -- not the previous day's END equity, which
+    is a different quantity FTMO's daily floor is never measured
+    against), the day's LOWEST observed equity (not just its last point --
+    the old worst_ftmo_day() compared end-of-day-to-end-of-day settled
+    equity, which misses an intraday dip that fully recovers by the day's
+    last observed point) and, from those two, an INDEPENDENTLY
+    recomputed daily-floor and static-total-floor breach flag -- distinct
+    from (and a cross-check on) whatever DAILY_STOP/TOTAL_STOP events the
+    simulator itself happened to emit, per the plan's own reasoning that
+    "0 events alone does not prove 0 breaches."
+
+    `balance_at_midnight_by_day` should be the simulator result's own
+    `balance_at_midnight_by_day` ledger (ISO date string -> USD); if not
+    supplied (e.g. a standalone/test curve with no ledger), every day's
+    B0 falls back to `initial_balance`, which is only exact for the FIRST
+    day. `daily_working_buffer_offset_usd`/`static_total_working_floor_usd`
+    default to this project's own confirmed 300/9200 USD robot limits if
+    not supplied, so a caller that only has the raw curve (no config) can
+    still get a meaningful analysis rather than an error."""
     if not equity_curve:
-        return {"day": None, "net_change_usd": 0.0}
-    by_day_last_point: dict = {}
+        return []
+    buffer_offset = 300.0 if daily_working_buffer_offset_usd is None else daily_working_buffer_offset_usd
+    static_floor = 9200.0 if static_total_working_floor_usd is None else static_total_working_floor_usd
+    ledger = balance_at_midnight_by_day or {}
+
+    by_day_values: dict = defaultdict(list)
     for t, eq, _bal in equity_curve:
-        by_day_last_point[ftmo_trading_day(t)] = eq
-    days = sorted(by_day_last_point.keys())
-    prev_eq = initial_balance
-    worst_day = None
-    worst_change = None
-    for d in days:
-        end_eq = by_day_last_point[d]
-        change = end_eq - prev_eq
-        if worst_change is None or change < worst_change:
-            worst_change = change
-            worst_day = d
-        prev_eq = end_eq
-    return {"day": worst_day.isoformat() if worst_day else None, "net_change_usd": worst_change or 0.0}
+        by_day_values[ftmo_trading_day(t)].append(eq)
+
+    out = []
+    for d in sorted(by_day_values.keys()):
+        b0 = ledger.get(d.isoformat(), initial_balance)
+        lowest = min(by_day_values[d])
+        daily_floor = b0 - buffer_offset
+        applicable_floor = max(daily_floor, static_floor)
+        out.append({
+            "day": d.isoformat(),
+            "balance_at_midnight_usd": b0,
+            "lowest_equity_that_day_usd": lowest,
+            "worst_move_from_b0_usd": lowest - b0,
+            "daily_working_floor_usd": daily_floor,
+            "static_total_working_floor_usd": static_floor,
+            "margin_to_applicable_floor_usd": lowest - applicable_floor,
+            "daily_floor_breached": lowest <= daily_floor,
+            "static_total_floor_breached": lowest <= static_floor,
+        })
+    return out
+
+
+def worst_ftmo_day(
+    equity_curve: list[tuple],
+    initial_balance: float,
+    balance_at_midnight_by_day: dict | None = None,
+    daily_working_buffer_offset_usd: float | None = None,
+    static_total_working_floor_usd: float | None = None,
+) -> dict:
+    """The FTMO-calendar-day (Europe/Prague) with the most negative move
+    from that day's OWN B0 to its LOWEST observed equity that day (Codex
+    F3) -- not an end-of-day-to-end-of-day SETTLED equity change, which
+    misses an intraday dip that recovers by the day's last observed
+    point. See daily_floor_analysis() for the full per-day breakdown this
+    is derived from (including independently recomputed floor breaches)."""
+    analysis = daily_floor_analysis(
+        equity_curve, initial_balance, balance_at_midnight_by_day,
+        daily_working_buffer_offset_usd, static_total_working_floor_usd,
+    )
+    if not analysis:
+        return {"day": None, "net_change_usd": 0.0}
+    worst = min(analysis, key=lambda d: d["worst_move_from_b0_usd"])
+    return {"day": worst["day"], "net_change_usd": worst["worst_move_from_b0_usd"]}
+
+
+def _months_between(first_day, last_day) -> list[tuple]:
+    """Every (year, month) from first_day's month to last_day's month,
+    inclusive -- so a month with zero trades and zero equity change still
+    gets a row instead of silently disappearing (Codex F4)."""
+    months = []
+    y, m = first_day.year, first_day.month
+    while (y, m) <= (last_day.year, last_day.month):
+        months.append((y, m))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return months
 
 
 def monthly_realized_vs_floating(
     result, initial_balance: float, full_calendar_months: set,
 ) -> list[dict]:
-    """Monthly table split by Europe/Prague calendar month, separately
-    showing REALIZED P/L (closed trades whose exit fell in that month) and
-    the month-END floating P/L of anything still open at the very end of
-    the whole run (only attributed to the LAST month in the sample, since
-    that is the only month-end this project's fixed sample actually has --
-    an interior month's positions were, by definition, already closed by
-    the time that month ended, or this run would show them in a LATER
-    month's realized total instead). Never marks a partial month as full;
-    never annualizes."""
-    by_month_realized: dict = defaultdict(float)
+    """FIXED 2026-09-18 (Codex F4): monthly table split by Europe/Prague
+    calendar month, now:
+    1. Includes swap (previously invisible in this table entirely --
+       swap posts directly to balance, never to a ClosedTrade, so it was
+       silently dropped; sum(monthly realized) used to differ from the
+       actual net balance change by exactly the total swap).
+    2. Attributes floating P/L at EVERY month's own last observed point
+       (`floating_at_month_end_usd = that point's equity - balance`), not
+       only the sample's overall LAST month -- an interior month whose
+       still-open position later closes in a SUBSEQUENT month previously
+       had its own real month-end floating P/L silently zeroed (the old
+       comment's reasoning -- "an interior month's positions would
+       already show up as realized" -- was simply wrong: they show up as
+       realized in whichever month they actually CLOSE, which reveals
+       nothing about what they were worth at an EARLIER month's own
+       boundary).
+    3. Includes every month between the sample's first and last observed
+       point, even ones with zero trades and zero swap (a fully idle
+       month, or every month after a working stop that closed everything).
+    Never marks a partial month as full; never annualizes. Realized here
+    includes both trade P/L and swap; the two are also reported
+    separately for anyone who wants only one."""
+    if not result.equity_curve:
+        return []
+
+    last_point_by_month: dict = {}
+    for t, eq, bal in result.equity_curve:
+        d = ftmo_trading_day(t)
+        last_point_by_month[(d.year, d.month)] = (eq, bal)  # curve is chronological -> ends up as that month's LAST point
+
+    by_month_trade_realized: dict = defaultdict(float)
     by_month_trades: dict = defaultdict(int)
-    for t in result.closed_trades:
-        d = ftmo_trading_day(t.exit_time_utc)
+    for tr in result.closed_trades:
+        d = ftmo_trading_day(tr.exit_time_utc)
         k = (d.year, d.month)
-        by_month_realized[k] += t.net_pnl_usd
+        by_month_trade_realized[k] += tr.net_pnl_usd
         by_month_trades[k] += 1
 
-    # Attribute end-of-sample floating P/L (still-open positions) to the
-    # LAST month actually present in the equity curve.
-    floating_by_month: dict = defaultdict(float)
-    if result.equity_curve and result.open_positions_at_end:
-        last_t = result.equity_curve[-1][0]
-        last_key = (ftmo_trading_day(last_t).year, ftmo_trading_day(last_t).month)
-        floating_at_end = result.final_equity - result.final_balance
-        floating_by_month[last_key] += floating_at_end
+    by_month_swap: dict = defaultdict(float)
+    for entry in getattr(result, "swap_ledger", []):
+        d = ftmo_trading_day(entry[0])
+        by_month_swap[(d.year, d.month)] += entry[4]
 
-    all_months = sorted(set(by_month_realized) | set(floating_by_month))
+    first_day = ftmo_trading_day(result.equity_curve[0][0])
+    last_day = ftmo_trading_day(result.equity_curve[-1][0])
+
     out = []
     month_start_equity = initial_balance
-    equity_by_ftmo_day = {ftmo_trading_day(t): eq for t, eq, _ in result.equity_curve} if result.equity_curve else {}
-    for (y, m) in all_months:
-        realized = by_month_realized.get((y, m), 0.0)
-        floating = floating_by_month.get((y, m), 0.0)
-        is_full = (y, m) in full_calendar_months
+    prev_floating = 0.0  # nothing was open before the sample started
+    for (y, m) in _months_between(first_day, last_day):
+        trade_realized = by_month_trade_realized.get((y, m), 0.0)
+        swap_realized = by_month_swap.get((y, m), 0.0)
+        realized = trade_realized + swap_realized
+        point = last_point_by_month.get((y, m))
+        floating_at_month_end = (point[0] - point[1]) if point is not None else prev_floating
+        month_end_equity = point[0] if point is not None else (month_start_equity + realized)
         out.append({
-            "year": y, "month": m, "is_full_calendar_month": is_full,
-            "realized_usd": realized, "floating_at_sample_end_usd": floating,
+            "year": y, "month": m,
+            "is_full_calendar_month": (y, m) in full_calendar_months,
+            "realized_usd": realized,
+            "realized_trade_usd": trade_realized,
+            "realized_swap_usd": swap_realized,
+            "floating_at_month_end_usd": floating_at_month_end,
             "trade_count": by_month_trades.get((y, m), 0),
             "realized_pct_of_initial_balance": 100.0 * realized / initial_balance,
-            # month_start_equity below is a running approximation carried
-            # from the previous month's end -- exact only if every prior
-            # month's floating component (if any) is itself exact, which
-            # it is here since only the LAST month can carry one.
             "realized_pct_of_month_start_equity": (100.0 * realized / month_start_equity) if month_start_equity else float("nan"),
         })
-        month_start_equity += realized + floating
+        month_start_equity = month_end_equity
+        prev_floating = floating_at_month_end
     return out
 
 
@@ -178,6 +270,16 @@ def full_metrics(
 
     from .report import lowest_equity, max_drawdown_from_peak
 
+    balance_at_midnight_by_day = getattr(result, "balance_at_midnight_by_day", {})
+    daily_analysis = daily_floor_analysis(
+        result.equity_curve, initial_balance, balance_at_midnight_by_day,
+        config.ftmo_limits.robot_daily_working_buffer_offset_usd,
+        config.ftmo_limits.robot_total_working_floor_usd,
+    )
+    independently_recomputed_breach_count = sum(
+        1 for d in daily_analysis if d["daily_floor_breached"] or d["static_total_floor_breached"]
+    )
+
     return {
         "variant": variant,
         "scenario": scenario,
@@ -205,8 +307,20 @@ def full_metrics(
         "profit_factor": profit_factor,
         "max_drawdown_from_peak_usd": max_drawdown_from_peak(result.equity_curve),
         "lowest_equity_usd": lowest_equity(result.equity_curve),
-        "worst_ftmo_day": worst_ftmo_day(result.equity_curve, initial_balance),
+        "worst_ftmo_day": worst_ftmo_day(
+            result.equity_curve, initial_balance, balance_at_midnight_by_day,
+            config.ftmo_limits.robot_daily_working_buffer_offset_usd,
+            config.ftmo_limits.robot_total_working_floor_usd,
+        ),
+        "daily_floor_analysis": daily_analysis,
+        # FIXED 2026-09-18 (Codex F3): the simulator's own emitted
+        # DAILY_STOP/TOTAL_STOP count is kept for reference, but is NOT
+        # the authoritative breach count -- see
+        # independently_recomputed_floor_breach_days below, recomputed
+        # directly from the raw equity curve and each day's own B0,
+        # which a report must prefer.
         "working_floor_breach_count": len(risk_stop_breaches),
+        "independently_recomputed_floor_breach_days": independently_recomputed_breach_count,
         "same_bar_sl_tp_ambiguous_count": ambiguous,
         "gap_fill_count": gap_fills,
         "avg_holding_time_hours": avg_holding_hours,

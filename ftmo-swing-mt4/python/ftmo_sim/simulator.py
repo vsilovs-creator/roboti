@@ -56,6 +56,12 @@ class SimulationResult:
     # REALIZED balance only and does not include these; see final_equity.
     open_positions_at_end: dict = field(default_factory=dict)
     final_equity: float = 0.0
+    # ADDED 2026-09-18 (Codex F3): balance_at_midnight (B0) per FTMO day
+    # (ISO date string -> USD), so a day's own floor
+    # (B0 - robot_daily_working_buffer_offset_usd) can be independently
+    # recomputed from the raw equity curve, rather than trusting only the
+    # simulator's own DAILY_STOP/TOTAL_STOP risk_stop_events.
+    balance_at_midnight_by_day: dict = field(default_factory=dict)
 
 
 def _merge_signal_feed(m5_by_symbol: dict[str, list[RichCandle]], h1_by_symbol: dict[str, list[RichCandle]], symbol: str):
@@ -143,46 +149,46 @@ def run_simulation(
             if bar is not None:
                 last_seen[s] = bar
 
-        rolled = risk_state.rollover_if_needed(ftmo_trading_day(t), balance)
+        today = ftmo_trading_day(t)
+        rolled = risk_state.rollover_if_needed(today, balance)
         if rolled:
             result.risk_stop_events.append((t, "ROLLOVER", f"balance_at_midnight={balance:.2f}"))
+            result.balance_at_midnight_by_day[today.isoformat()] = balance
 
-        # -- position exits (SL/TP/session close) --
-        for s in list(open_positions.keys()):
-            bar = bar_by_symbol_by_time[s].get(t)
-            if bar is None:
-                continue
-            pos = open_positions[s]
-            trade = simulate_exit(
-                pos, [bar], config.symbols[s], config.raw["account"]["currency"],
-                spreads[s], config.commission_round_turn_usd_per_lot, slippage_price=slippage_price,
-            )
-            if trade is not None:
-                balance += trade.net_pnl_usd
-                result.closed_trades.append(trade)
-                del open_positions[s]
+        # FIXED 2026-09-18 (Codex F2, follow-up-follow-up audit): exit
+        # processing for pre-existing positions used to run HERE, using
+        # THIS bar's intrabar high/low/close before this bar's entries were
+        # decided -- letting risk freed by a same-bar-LATER exit be used by
+        # an entry decided at the bar's OPEN, before that risk had actually
+        # been freed. Deferred to a unified pass after entries (below),
+        # covering pre-existing survivors and this tick's own new entries
+        # alike against the same bar in one pass.
 
         # -- mark-to-market equity + risk stop evaluation --
-        def _floating_pnl() -> float:
+        def _mark_price(symbol: str, direction: str, use_close: bool) -> float | None:
+            bar = last_seen.get(symbol)
+            if bar is None:
+                return None
+            raw = bar.close if use_close else bar.open
+            return raw if direction == "BUY" else raw + spreads[symbol]
+
+        def _floating_pnl(use_close: bool) -> float:
             floating = 0.0
             for s, pos in open_positions.items():
-                bar = last_seen.get(s)
-                if bar is None:
+                price = _mark_price(s, pos.direction, use_close)
+                if price is None:
                     continue
-                mark_bid = bar.close
-                mark_ask = mark_bid + spreads[s]
-                price = mark_bid if pos.direction == "BUY" else mark_ask
                 sign = 1 if pos.direction == "BUY" else -1
                 floating += sign * (price - pos.entry_price) * pos.lots * config.symbols[s].contract_size
             return floating
 
         # PRE-entry equity, for gating this timestamp's entries/risk-stop
-        # only -- NOT the recorded equity-curve point. See the matching,
-        # longer comment in simulator_ema_cross.py (FIXED 2026-09-18,
-        # follow-up audit) for why the curve point must be recorded AFTER
-        # this timestamp's own entries/same-bar closures (as "settled"
-        # below), not here.
-        equity = balance + _floating_pnl()
+        # only -- NOT the recorded equity-curve point. Marked from this
+        # bar's OPEN (use_close=False): the close is not knowable yet at
+        # the instant these decisions are made (Codex F2). See "settled"
+        # below for the close-based, post-entry/post-intrabar point that
+        # IS the recorded equity-curve value.
+        equity = balance + _floating_pnl(use_close=False)
 
         was_stopped = risk_state.stop_active()
         risk_state.evaluate(equity, config.ftmo_limits)
@@ -190,28 +196,24 @@ def run_simulation(
             reason = "TOTAL_STOP" if risk_state.total_stop_active else "DAILY_STOP"
             result.risk_stop_events.append((t, reason, f"equity={equity:.2f}"))
             for s in list(open_positions.keys()):
-                bar = last_seen.get(s)
-                if bar is None:
+                fill = _mark_price(s, open_positions[s].direction, use_close=False)
+                if fill is None:
                     continue
-                fill = bar.close if open_positions[s].direction == "BUY" else bar.close + spreads[s]
                 trade = force_close(
                     open_positions[s], fill, t, "RISK_STOP",
                     config.symbols[s], config.raw["account"]["currency"],
                     config.commission_round_turn_usd_per_lot, slippage_price=slippage_price,
                 )
-                balance += trade.net_pnl_usd
+                # FIXED 2026-09-18 (Codex F5): net_pnl_usd already deducts
+                # the FULL round-turn commission; the entry-side half was
+                # already deducted from balance at open time (below), so
+                # it is added back here to avoid double-charging it --
+                # the two legs together still sum to exactly net_pnl_usd.
+                balance += trade.net_pnl_usd + trade.position.entry_commission_usd
                 result.closed_trades.append(trade)
                 del open_positions[s]
 
         # -- new entries from queued signals whose fill bar has arrived --
-        # FIXED 2026-09-18 (independent code audit): a position opened below
-        # at this bar's open was never checked against THIS SAME bar's own
-        # high/low -- the exit-processing block above already ran, before
-        # this position existed, so its own intrabar move was silently
-        # skipped and only caught (as a much worse "gap" exit) on the
-        # FOLLOWING bar. newly_opened tracks anything opened this timestamp
-        # so it can be checked against its own entry bar immediately below,
-        # before moving to the next timestamp.
         newly_opened: dict[str, RichCandle] = {}
 
         while signal_ptr < len(all_signals) and all_signals[signal_ptr].retest_close_time_utc + M5 <= t:
@@ -267,9 +269,11 @@ def run_simulation(
                     # simultaneous entry decision).
                     remaining = pos.risk_usd_at_entry
                 else:
-                    bar = last_seen.get(other_symbol)
-                    mark = bar.close if pos.direction == "BUY" else bar.close + spreads[other_symbol]
-                    remaining = abs(mark - pos.sl) * pos.lots * config.symbols[other_symbol].contract_size
+                    # FIXED 2026-09-18 (Codex F2): mark from this bar's
+                    # OPEN, not its close -- see the matching comment in
+                    # simulator_ema_cross.py.
+                    mark = _mark_price(other_symbol, pos.direction, use_close=False)
+                    remaining = abs(mark - pos.sl) * pos.lots * config.symbols[other_symbol].contract_size if mark is not None else pos.risk_usd_at_entry
                 open_risk_views.append(OpenPositionRiskView(other_symbol, remaining, _direction_bucket(pos.direction)))
 
             floor = risk_state.balance_at_midnight - config.ftmo_limits.robot_daily_working_buffer_offset_usd
@@ -298,25 +302,36 @@ def run_simulation(
                 f"idea-{idea_counter}", sig.symbol, sig.direction, lots, fill_bar.open,
                 sig.sl_price, sig.tp_price, fill_bar.open_time_utc, spreads[sig.symbol], actual_risk,
                 slippage_price=slippage_price,
+                commission_round_turn_usd_per_lot=config.commission_round_turn_usd_per_lot,
             )
+            # FIXED 2026-09-18 (Codex F5): book the entry-side commission
+            # (2.50 USD/lot/side, confirmed) immediately, not only once
+            # this position eventually closes -- a still-open position's
+            # balance/equity must already reflect it.
+            balance -= pos.entry_commission_usd
             open_positions[sig.symbol] = pos
             newly_opened[sig.symbol] = fill_bar
 
-        # Same-bar SL/TP check for anything just opened above.
-        for s, fill_bar in newly_opened.items():
-            pos = open_positions.get(s)
-            if pos is None:
+        # Intrabar SL/TP for EVERY position still open at this point --
+        # pre-existing survivors AND anything just opened by this tick's
+        # own entries alike, checked against this SAME bar in one unified
+        # pass, strictly AFTER entries (Codex F2 -- see the matching
+        # comment near the top of this timestep for the reasoning).
+        for s in list(open_positions.keys()):
+            bar = bar_by_symbol_by_time[s].get(t)
+            if bar is None:
                 continue
+            pos = open_positions[s]
             trade = simulate_exit(
-                pos, [fill_bar], config.symbols[s], config.raw["account"]["currency"],
+                pos, [bar], config.symbols[s], config.raw["account"]["currency"],
                 spreads[s], config.commission_round_turn_usd_per_lot, slippage_price=slippage_price,
             )
             if trade is not None:
-                balance += trade.net_pnl_usd
+                balance += trade.net_pnl_usd + trade.position.entry_commission_usd
                 result.closed_trades.append(trade)
                 del open_positions[s]
 
-        settled_equity = balance + _floating_pnl()
+        settled_equity = balance + _floating_pnl(use_close=True)
         result.equity_curve.append((t, settled_equity, balance))
 
     result.final_balance = balance

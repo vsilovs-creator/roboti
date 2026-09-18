@@ -127,10 +127,30 @@ All amounts USD, `B0` = balance at 00:00 Europe/Prague ("FTMO day"):
   open; (b) an end-of-run equity/balance mismatch, where a trade opened
   and closed within the run's very last timestamp updated the realized
   balance but not the already-recorded last equity-curve point.
-- 98 pytest tests cover this (`python/tests/`), including the originally
-  mandated risk/execution scenarios plus new regressions for both bugs
-  above, the commission-in-budget fix, adverse slippage's direction
-  convention, and every new strategy engine's edge cases.
+- **Five more bugs found by an independent Codex review and fixed in a
+  third round** (see `docs/AUDIT_2026-09-18.md`'s newest section for full
+  reproduction/fix detail; each was reproduced with a regression test
+  that fails against the pre-fix code before being fixed): (a) the C2/C3
+  cost-stress scenarios never actually reached the simulator (every
+  scenario silently ran C1's spread); (b) a broader version of the
+  causality leak above -- ANY already-open position's risk mark used its
+  current-minute close, and ALL open positions' SL/TP were resolved
+  before that same minute's new entries, in all three simulator modules,
+  not just one; (c) the worst-FTMO-day metric compared end-of-day to
+  end-of-day instead of each day's own midnight balance vs. its own
+  lowest intraday equity; (d) the monthly P/L table silently dropped swap
+  and mis-attributed floating P/L; (e) entry-side commission (2.50
+  USD/lot) was never booked until a trade closed. All 24 (variant,
+  scenario) runs were recomputed after these fixes -- see section 5 below
+  for the corrected numbers and an explicit old-vs-new comparison in
+  `docs/STRATEGY_RESEARCH_2026-09-18.md`. No strategy parameter or risk
+  limit was changed in this round; only the simulator/accounting
+  infrastructure was fixed.
+- 104 pytest tests cover this (`python/tests/`), including the originally
+  mandated risk/execution scenarios plus new regressions for all seven
+  bugs above (the two prior-round ones and the five Codex findings), the
+  commission-in-budget fix, adverse slippage's direction convention, and
+  every new strategy engine's edge cases.
 
 ## 5. Eight strategy variants x three cost scenarios (the main new work)
 
@@ -199,40 +219,56 @@ regression tests that fail against the buggy code) are in
 ### Headline results -- all 24 runs
 
 Net is realized-balance change from the 10,000 USD start; each
-(variant, scenario) pair ran its own fully independent account.
+(variant, scenario) pair ran its own fully independent account. **These
+are the recomputed, post-Codex-fix (F1-F5) numbers** -- see
+`docs/STRATEGY_RESEARCH_2026-09-18.md`'s "Old vs new" table for the full
+per-run diff against the original (buggy) computation; the biggest
+changes are in C2/C3, since F1's bug meant those scenarios silently ran
+at C1's spread before this round's fix.
 
 | Variant | C1 net USD (%) | C2 net USD (%) | C3 net USD (%) | Trades (C1) | Profit factor (C1) | Expectancy R (C1) |
 |---|---|---|---|---|---|---|
-| S1 London breakout | -319.38 (-3.19%) | -382.57 (-3.83%) | -431.93 (-4.32%) | 20 | 0.23 | -0.641 |
-| S2 EMA(20/50) cross | -281.89 (-2.82%) | -304.16 (-3.04%) | -330.47 (-3.30%) | 25 | 0.49 | -0.424 |
-| S3 Bollinger(20,2) | -781.70 (-7.82%) | -775.74 (-7.76%) | -794.56 (-7.95%) | 102 | 0.63 | -0.289 |
-| S4 EMA exit-on-opposite | -299.75 (-3.00%) | -324.84 (-3.25%) | -349.19 (-3.49%) | 26 | 0.42 | -0.433 |
-| S5 S4 + reverse | -145.79 (-1.46%) | -176.99 (-1.77%) | -234.03 (-2.34%) | 27 | 0.72 | -0.188 |
-| S6 Donchian 20/10+ATR | -142.56 (-1.43%) | -216.12 (-2.16%) | -385.93 (-3.86%) | 52 | 0.86 | -0.080 |
-| S7 False-breakout M30 | -780.27 (-7.80%) | -776.91 (-7.77%) | -792.53 (-7.93%) | 62 | 0.32 | -0.508 |
-| S8 RSI2 pullback M30 | -269.07 (-2.69%) | -377.43 (-3.77%) | -542.51 (-5.43%) | 78 | 0.64 | -0.140 |
+| S1 London breakout | -319.38 (-3.19%) | -546.85 (-5.47%) | -648.76 (-6.49%) | 20 | 0.23 | -0.641 |
+| S2 EMA(20/50) cross | -281.89 (-2.82%) | -328.61 (-3.29%) | -318.05 (-3.18%) | 25 | 0.49 | -0.424 |
+| S3 Bollinger(20,2) | -786.76 (-7.87%) | -789.69 (-7.90%) | -775.39 (-7.75%) | 147 | 0.73 | -0.198 |
+| S4 EMA exit-on-opposite | -299.75 (-3.00%) | -350.94 (-3.51%) | -349.56 (-3.50%) | 26 | 0.42 | -0.433 |
+| S5 S4 + reverse | -145.79 (-1.46%) | -327.91 (-3.28%) | -400.94 (-4.01%) | 27 | 0.72 | -0.188 |
+| S6 Donchian 20/10+ATR | -142.71 (-1.43%) | -386.59 (-3.87%) | -539.88 (-5.40%) | 52 | 0.86 | -0.080 |
+| S7 False-breakout M30 | -780.27 (-7.80%) | -787.09 (-7.87%) | -781.20 (-7.81%) | 62 | 0.32 | -0.508 |
+| S8 RSI2 pullback M30 | -269.45 (-2.69%) | -619.51 (-6.20%) | -780.07 (-7.80%) | 78 | 0.64 | -0.140 |
 
 **Every single one of the 24 runs is net negative. Working-floor breach
-count is 0 for all 24 (nobody got stopped out -- every loss above is the
-account simply losing money gradually).** The smallest losers are S5 and
-S6 (both around -1.4% in C1), but neither is close to breakeven, and
-neither stays the smallest loser under the stronger stress scenario --
-S6's C1 advantage erodes fastest of the eight (C1 -142.56 -> C3 -385.93)
-because it holds the longest on average (27.9h) with no fixed TP, while
-S5 degrades more gently (C1 -145.79 -> C3 -234.03).
+count is 0 for all 24, confirmed both by the simulator's own emitted stop
+events AND (new this round, F3's fix) an independent recomputation
+straight from the raw equity curve and each day's own midnight balance --
+nobody got stopped out; every loss above is the account simply losing
+money gradually.** The smallest C1 losers are S5 and S6 (both around
+-1.4% in C1), but neither is close to breakeven, and **neither is the
+overall best once the correctly-applied C2/C3 spread (F1's fix) is
+factored in**: S6's C1 advantage erodes the fastest of any variant under
+stress (C1 -142.71 -> C3 -539.88, a >3.7x degradation), while S5 loses
+its C1 edge over S2 entirely once cost stress applies (S5 C2/C3: -327.91
+/ -400.94 vs. S2's -328.61 / -318.05) -- the original round's "S5 stays
+best in every scenario" claim was itself an artifact of F1's bug and does
+not survive the fix.
 
 ### S4/S5 vs S2 (the direct comparison specifically requested)
 
-S4 alone is slightly WORSE than S2 on every metric (profit factor 0.42 vs
-0.49, expectancy -0.433R vs -0.424R, drawdown 357 vs 352 USD) -- forcing
-an exit on every opposite signal, instead of letting an existing position
-ride to its own SL/TP, is a net-negative whipsaw cost on this sample by
-itself. S5 (the same exit, PLUS one independent reverse idea) is the best
-of the three by every metric, including a much shorter max losing streak
-(5 vs 12 trades) and roughly half S2's drawdown -- not because S4's exit
-was secretly good, but because catching the new direction's actual move
-outweighed both the added whipsaw cost and exiting the first position
-slightly early. Still a loss in every scenario.
+S4 alone is slightly WORSE than S2 on every C1 metric (profit factor 0.42
+vs 0.49, expectancy -0.433R vs -0.424R, drawdown 357 vs 352 USD) --
+forcing an exit on every opposite signal, instead of letting an existing
+position ride to its own SL/TP, is a net-negative whipsaw cost on this
+sample by itself. S5 (the same exit, PLUS one independent reverse idea)
+is the best of the three AT C1 by every metric, including a much shorter
+max losing streak (5 vs 12 trades) and roughly half S2's drawdown -- not
+because S4's exit was secretly good, but because catching the new
+direction's actual move outweighed both the added whipsaw cost and
+exiting the first position slightly early. **This C1 advantage does not
+carry over to C2/C3 once F1's spread bug is fixed**: S5's extra
+round-trip (the reverse entry) pays the wider spread/slippage twice as
+often per idea as S2 does, so at C2 (-327.91 vs S2's -328.61) and C3
+(-400.94 vs S2's -318.05) S5 is no longer clearly ahead of S2. Still a
+loss in every scenario, for all three variants.
 
 ### Cost breakdown (C1) -- commission / spread / slippage / swap, USD
 
@@ -240,7 +276,7 @@ slightly early. Still a loss in every scenario.
 |---|---|---|---|
 | S1 | 86.80 | 230.15 | 0.00 |
 | S2 | 20.75 | 48.35 | -22.66 |
-| S3 | 139.15 | 335.15 | -62.85 |
+| S3 | 197.90 | 476.45 | -83.88 |
 | S4 | 21.50 | 50.60 | -23.95 |
 | S5 | 22.90 | 52.55 | -21.37 |
 | S6 | 30.80 | 73.40 | -44.69 |
@@ -248,35 +284,46 @@ slightly early. Still a loss in every scenario.
 | S8 | 90.85 | 220.15 | -1.15 |
 
 (Slippage is 0.00 in C1 by construction; it is nonzero and material in
-C2/C3 -- see the full `summary.json` per run.) Swap is 31% of S6's net C1
-loss -- the one candidate where the swap-rollover-hour approximation
-actually matters, and where the promised alternative-rollover-time
-sensitivity test was **not run this round** (an explicit, tracked open
-item, not a silent skip).
+C2/C3 -- see the full `summary.json` per run.) S3's commission/spread/swap
+grew from the original round (139.15/335.15/-62.85) because the F2
+event-order fix changed how many trades S3 takes on this sample (102 ->
+147); every other variant's C1 cost breakdown is unchanged. Swap is 31.3%
+of S6's net C1 loss -- the one candidate where the swap-rollover-hour
+approximation actually matters, and where the promised
+alternative-rollover-time sensitivity test was **not run this round** (an
+explicit, tracked open item, not a silent skip).
 
 ### One notable failure-mode finding: S7 is really a one-month result
 
 62 of S7's 62 C1 trades closed within the FIRST month (July) of the
-sample. After that, 421 signals were rejected for
-`PRE_TRADE_PROJECTED_EQUITY_BREACH` across the rest of the sample -- the
-pre-trade worst-case-equity gate (deliberately more conservative than the
-actual floor) kept blocking new entries because the account never fully
-recovered, even though the actual floor was never breached. S7's headline
-loss is therefore weaker evidence than it looks: effectively a
-single-month test, not a genuine two-month one.
+sample. After that, the same 421 signals as the original round were
+rejected for `PRE_TRADE_PROJECTED_EQUITY_BREACH` across the rest of the
+sample (S7's behavior is unaffected by F1-F5 on this sample, since its
+whole trading history is clustered in July before either bug's edge
+cases arise) -- the pre-trade worst-case-equity gate (deliberately more
+conservative than the actual floor) kept blocking new entries because the
+account never fully recovered, even though the actual floor was never
+breached (now independently confirmed, not just simulator-self-reported).
+S7's headline loss is therefore weaker evidence than it looks: effectively
+a single-month test, not a genuine two-month one.
 
 ### Monthly table (C1; Europe/Prague calendar months; only 2026-08 is full)
+
+Figures below now include that month's own swap accrual (F4's fix --
+previously swap never appeared in this table); every month in the sample
+range appears even with 0 trades (previously some zero-activity months,
+e.g. S3's 2026-09, vanished from the table entirely).
 
 | Variant | 2026-07 (partial) | 2026-08 (FULL) | 2026-09 (partial) |
 |---|---|---|---|
 | S1 | -43.00 | -199.25 | -77.13 |
-| S2 | +30.82 | -168.59 | -121.47 |
-| S3 | -283.43 | -435.42 | N/A (0 trades) |
-| S4 | +30.82 | -185.15 | -121.47 |
-| S5 | +30.82 | **-33.78** | -121.47 |
-| S6 | -106.50 | -48.77 | +57.41 |
-| S7 | -774.28 | N/A (0 trades) | N/A (0 trades) |
-| S8 | -112.43 | -95.51 | -59.98 |
+| S2 | +29.59 | -183.39 | -128.09 |
+| S3 | -223.45 | -392.04 | -171.28 |
+| S4 | +29.59 | -201.24 | -128.09 |
+| S5 | +29.59 | **-47.29** | -128.09 |
+| S6 | -115.59 | -75.81 | +48.85 |
+| S7 | -780.27 | 0.00 (0 trades) | 0.00 (0 trades) |
+| S8 | -112.43 | -96.66 | -59.98 |
 
 No variant's full calendar month reaches anywhere near the FTMO-Swing-
 account-owner's informally stated +2000 USD / +20% target -- the best

@@ -64,6 +64,9 @@ class M30SimulationResult:
     final_balance: float = 0.0
     open_positions_at_end: dict = field(default_factory=dict)
     final_equity: float = 0.0
+    # ADDED 2026-09-18 (Codex F3): see the matching field on
+    # simulator.SimulationResult.
+    balance_at_midnight_by_day: dict = field(default_factory=dict)
 
     @property
     def total_swap_usd(self) -> float:
@@ -180,6 +183,7 @@ def run_m30_signal_simulation(
         rolled = risk_state.rollover_if_needed(today, balance)
         if rolled:
             result.risk_stop_events.append((t, "ROLLOVER", f"balance_at_midnight={balance:.2f}"))
+            result.balance_at_midnight_by_day[today.isoformat()] = balance
             night_starting_weekday = (today - timedelta(days=1)).weekday()
             for s, pos in open_positions.items():
                 swap_usd = _swap_usd_for_one_night(pos, config.symbols[s], night_starting_weekday)
@@ -187,38 +191,32 @@ def run_m30_signal_simulation(
                     balance += swap_usd
                     result.swap_ledger.append((t, s, pos.direction, pos.lots, swap_usd))
 
-        for s in list(open_positions.keys()):
-            bar = bar_by_symbol_by_time[s].get(t)
-            if bar is None:
-                continue
-            pos = open_positions[s]
-            trade = simulate_exit(
-                pos, [bar], config.symbols[s], config.raw["account"]["currency"],
-                spreads[s], config.commission_round_turn_usd_per_lot,
-                enforce_session_close=False, slippage_price=slippage_price,
-            )
-            if trade is not None:
-                balance += trade.net_pnl_usd
-                result.closed_trades.append(trade)
-                del open_positions[s]
+        # FIXED 2026-09-18 (Codex F2): the intrabar SL/TP check for
+        # pre-existing positions used to run HERE, before this bar's
+        # entries -- see the matching comment in simulator_ema_cross.py.
+        # Deferred to a unified pass after entries (below).
 
-        def _floating_pnl() -> float:
+        def _mark_price(symbol: str, direction: str, use_close: bool) -> float | None:
+            bar = last_seen.get(symbol)
+            if bar is None:
+                return None
+            raw = bar.close if use_close else bar.open
+            return raw if direction == "BUY" else raw + spreads[symbol]
+
+        def _floating_pnl(use_close: bool) -> float:
             floating = 0.0
             for s, pos in open_positions.items():
-                bar = last_seen.get(s)
-                if bar is None:
+                price = _mark_price(s, pos.direction, use_close)
+                if price is None:
                     continue
-                mark_bid = bar.close
-                mark_ask = mark_bid + spreads[s]
-                price = mark_bid if pos.direction == "BUY" else mark_ask
                 sign = 1 if pos.direction == "BUY" else -1
                 floating += sign * (price - pos.entry_price) * pos.lots * config.symbols[s].contract_size
             return floating
 
         # Pre-entry equity: gates this timestamp's entries/risk-stop using
-        # only already-known information, per the section-4.1 causality
-        # ordering (mirrors simulator_ema_cross.py's identical fix).
-        equity = balance + _floating_pnl()
+        # only already-known information -- marked from this bar's OPEN,
+        # never its close (Codex F2).
+        equity = balance + _floating_pnl(use_close=False)
 
         was_stopped = risk_state.stop_active()
         risk_state.evaluate(equity, config.ftmo_limits)
@@ -226,16 +224,15 @@ def run_m30_signal_simulation(
             reason = "TOTAL_STOP" if risk_state.total_stop_active else "DAILY_STOP"
             result.risk_stop_events.append((t, reason, f"equity={equity:.2f}"))
             for s in list(open_positions.keys()):
-                bar = last_seen.get(s)
-                if bar is None:
+                fill = _mark_price(s, open_positions[s].direction, use_close=False)
+                if fill is None:
                     continue
-                fill = bar.close if open_positions[s].direction == "BUY" else bar.close + spreads[s]
                 trade = force_close(
                     open_positions[s], fill, t, "RISK_STOP",
                     config.symbols[s], config.raw["account"]["currency"],
                     config.commission_round_turn_usd_per_lot, slippage_price=slippage_price,
                 )
-                balance += trade.net_pnl_usd
+                balance += trade.net_pnl_usd + trade.position.entry_commission_usd
                 result.closed_trades.append(trade)
                 del open_positions[s]
 
@@ -264,7 +261,7 @@ def run_m30_signal_simulation(
                 config.symbols[s], config.raw["account"]["currency"],
                 config.commission_round_turn_usd_per_lot, slippage_price=0.0,
             )
-            balance += trade.net_pnl_usd
+            balance += trade.net_pnl_usd + trade.position.entry_commission_usd
             result.closed_trades.append(trade)
             del open_positions[s]
 
@@ -300,7 +297,7 @@ def run_m30_signal_simulation(
                 config.symbols[exit_symbol], config.raw["account"]["currency"],
                 config.commission_round_turn_usd_per_lot, slippage_price=0.0,
             )
-            balance += trade.net_pnl_usd
+            balance += trade.net_pnl_usd + trade.position.entry_commission_usd
             result.closed_trades.append(trade)
             del open_positions[exit_symbol]
 
@@ -372,9 +369,10 @@ def run_m30_signal_simulation(
                 if other_symbol in newly_opened:
                     remaining = pos.risk_usd_at_entry
                 else:
-                    bar = last_seen.get(other_symbol)
-                    mark = bar.close if pos.direction == "BUY" else bar.close + spreads[other_symbol]
-                    remaining = abs(mark - pos.sl) * pos.lots * config.symbols[other_symbol].contract_size
+                    # FIXED 2026-09-18 (Codex F2): mark from this bar's
+                    # OPEN, not its close.
+                    mark = _mark_price(other_symbol, pos.direction, use_close=False)
+                    remaining = abs(mark - pos.sl) * pos.lots * config.symbols[other_symbol].contract_size if mark is not None else pos.risk_usd_at_entry
                 open_risk_views.append(OpenPositionRiskView(other_symbol, remaining, bucket))
                 open_risk_by_idea[other_symbol] = remaining
                 idea_symbol[other_symbol] = other_symbol
@@ -402,25 +400,33 @@ def run_m30_signal_simulation(
                 f"m30-idea-{idea_counter}", sig.symbol, sig.direction, lots, fill_bar.open,
                 sl_price, tp_price, fill_bar.open_time_utc, spreads[sig.symbol], actual_risk,
                 slippage_price=slippage_price,
+                commission_round_turn_usd_per_lot=config.commission_round_turn_usd_per_lot,
             )
+            # FIXED 2026-09-18 (Codex F5): book the entry-side commission now.
+            balance -= pos.entry_commission_usd
             open_positions[sig.symbol] = pos
             newly_opened[sig.symbol] = fill_bar
 
-        for s, fill_bar in newly_opened.items():
-            pos = open_positions.get(s)
-            if pos is None:
+        # Intrabar SL/TP for EVERY position still open at this point --
+        # pre-existing survivors AND this tick's own new entries alike,
+        # checked against this SAME bar in one unified pass, strictly
+        # AFTER entries (Codex F2).
+        for s in list(open_positions.keys()):
+            bar = bar_by_symbol_by_time[s].get(t)
+            if bar is None:
                 continue
+            pos = open_positions[s]
             trade = simulate_exit(
-                pos, [fill_bar], config.symbols[s], config.raw["account"]["currency"],
+                pos, [bar], config.symbols[s], config.raw["account"]["currency"],
                 spreads[s], config.commission_round_turn_usd_per_lot,
                 enforce_session_close=False, slippage_price=slippage_price,
             )
             if trade is not None:
-                balance += trade.net_pnl_usd
+                balance += trade.net_pnl_usd + trade.position.entry_commission_usd
                 result.closed_trades.append(trade)
                 del open_positions[s]
 
-        settled_equity = balance + _floating_pnl()
+        settled_equity = balance + _floating_pnl(use_close=True)
         result.equity_curve.append((t, settled_equity, balance))
 
     result.final_balance = balance
