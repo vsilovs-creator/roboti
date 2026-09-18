@@ -186,9 +186,16 @@ runner mode parameter as S4.
 - SL = 1.5 x ATR14(M30, Wilder) from the actual fill price. No fixed TP.
 - Exit (checked starting with the first M30 candle that closes AFTER entry,
   earliest of the three wins):
-  1. `M30 close` crosses back through `SMA5` against the position (long:
-     `close < SMA5`; short: `close > SMA5`) -- SMA5 seeded once 5 closed M30
-     bars are available, no signal considered before that.
+  1. `M30 close` crosses back through `SMA5` -- the mean-reversion
+     completing FAVORABLY (long: `close > SMA5`; short: `close < SMA5`) --
+     SMA5 seeded once 5 closed M30 bars are available, no signal considered
+     before that. CORRECTION (same day, before any S8 code was written):
+     an earlier draft of this section had these two directions swapped
+     ("against the position" instead of "the reversion completing"),
+     contradicting the original task text ("close long if M30 close>M30
+     SMA5, close short if close<SMA5"). Caught during implementation
+     review; fixed here to match the original spec exactly before writing
+     strategy_rsi2_pullback_m30.py.
   2. 10 full M30 candles have closed since entry.
   3. A CLOSED H1 candle's close breaches EMA200 against the position (long:
      `H1 close < H1 EMA200`; short: `H1 close > H1 EMA200`).
@@ -311,6 +318,15 @@ this section itself; reproduce with:
 sed '/^## Plan hash/,$d' docs/EXPERIMENT_PLAN_2026-09-18.md | sha256sum
 ```
 
+Original hash, at the time S4-S6 were implemented (before the S8 SMA5-exit
+direction correction below was made):
 ```
 97609bf8ed9418c857621aba9bb884317eafc4c4a4a4485324f15baeb6a6c3fb
+```
+
+Updated hash, after correcting section 2 S8's SMA5-exit direction (S4-S6/S7
+were unaffected by and implemented before this correction; no S8 code
+existed yet when it was made):
+```
+deb1d9d06f5663263ee93c0965a016e8d5cc43568d4ab6c295d972f6f2ce473f
 ```
