@@ -3,6 +3,11 @@
 Every item below is either **CONFIRMED** (with source) or **UNKNOWN**
 (never silently assumed to be zero/neutral anywhere in this codebase).
 
+See also `docs/AUDIT_2026-09-18.md` for an independent code audit's
+findings (two P0 simulator bugs, since fixed, plus several items now
+reflected below) and `reports/README.md` for which report numbers are
+superseded by that fix.
+
 ## Confirmed from the instrument-specification screenshots (this session)
 
 | Field | EURUSD | GBPUSD |
@@ -65,21 +70,36 @@ particular, are known to change over time at any broker.
    the same as 1:100 leverage; the true leverage/margin call behavior was
    not in scope of the screenshots provided and is not modeled (this
    prototype never modes margin calls, only the FTMO/robot equity floors).
-4. **Historical spread and slippage distribution.** The CSVs are Bid-only
+2. **Historical spread and slippage distribution.** The CSVs are Bid-only
    M1 OHLC with no tick-level Bid/Ask. `spread_points_hypothetical` in the
    config is a labeled placeholder for EXPLORATORY runs only.
-5. **Freeze level.** Not in the provided screenshots; `MODE_STOPLEVEL` shows
+3. **Freeze level.** Not in the provided screenshots; `MODE_STOPLEVEL` shows
    0, but freeze level is a distinct MT4 constant (`MODE_FREEZELEVEL`) that
    must be read live and was not captured.
-6. **Historical swap-rate changes.** Only the current snapshot is known;
+4. **Historical swap-rate changes.** Only the current snapshot is known;
    swap points are not assumed constant over a multi-month/year backtest.
-7. **The exact MT4 iATR/iMA(EMA) warmup numerics.** The Python engine
+5. **The real swap-application hour/timing.** `simulator_ema_cross.py` now
+   accrues swap once per FTMO-day (Prague) rollover, tripled on the night
+   starting Wednesday (added 2026-09-18, see `docs/AUDIT_2026-09-18.md`
+   P1-5) -- a materially better approximation than the previous silent
+   zero, but not a confirmed model. Real MT4 posts swap at a specific
+   server-local rollover hour that may not line up with the Prague-day
+   boundary used here.
+6. **The exact MT4 iATR/iMA(EMA) warmup numerics.** The Python engine
    hand-rolls a simple-average-seeded Wilder ATR / EMA (documented in
    `python/ftmo_sim/signals.py`) because it has no indicator history to draw
    on; MT4's built-ins read full history. A parity test between the two
    (spec section 8) is required before assuming they agree bar-for-bar,
    especially near the warmup boundary.
-8. **FTMO's current published rules.** This design is pinned to the
+7. **FTMO's current published rules.** This design is pinned to the
    2026-09-17 conversation snapshot (spec section 12). Re-check the live
    FTMO agreement before any operational use; if it has changed, surface the
    conflict rather than silently keeping the 300/9200 USD robot limits.
+8. **The single-controller instance guard is weaker than it may sound.**
+   `RiskState`'s (Python) / `Persistence.mqh`'s (MQL4) account/server match
+   check accepts a legitimate restart of the same controller and a second
+   concurrent instance identically -- both present the same account/server.
+   A true exclusive lock (e.g. a lock file with a liveness heartbeat) has
+   not been implemented; flagged by the 2026-09-18 audit
+   (`docs/AUDIT_2026-09-18.md` P1-6) and accepted as a known gap rather than
+   fixed in that round.

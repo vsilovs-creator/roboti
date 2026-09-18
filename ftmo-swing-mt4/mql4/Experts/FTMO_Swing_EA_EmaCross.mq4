@@ -178,8 +178,17 @@ void OnTick()
       SaveRiskState(g_state); // persist the stop BEFORE cancelling/closing, per spec section 4
       FtmoLog("RISK", "STOP TRIGGERED equity=" + DoubleToString(equity, 2) +
               " daily=" + (g_state.dailyStopActive ? "1" : "0") + " total=" + (g_state.totalStopActive ? "1" : "0"));
-      if(EnableLiveTrading) CloseAllManagedPositionsAndPendings();
      }
+   // FIXED 2026-09-18 (independent code audit): this used to be gated on
+   // `!wasStopped` (only the tick the stop first triggers), so a failed
+   // close attempt was never retried on later ticks -- the log message
+   // promising a retry was not backed by any actual retry logic. Now it
+   // retries every tick for as long as the stop is active AND the account
+   // still has anything open, whether that is left over from this tick's
+   // trigger, a failed close from an earlier tick, or state recovered
+   // after a restart with the stop already active.
+   if(StopActive(g_state) && OrdersTotal() > 0 && EnableLiveTrading)
+      CloseAllPositionsAndPendingsAccountWide();
 
    // No forced session close here: this is a swing/trend strategy meant to
    // hold across the 16:00 London boundary (unlike FTMO_Swing_EA.mq4).

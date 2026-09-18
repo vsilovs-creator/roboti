@@ -4,6 +4,13 @@ Source of truth: `python/ftmo_sim/account_risk.py`, `risk_state.py`,
 `symbol_spec.py`. The MQL4 mirrors are in `mql4/Include/FTMO/AccountRisk.mqh`
 and `Persistence.mqh` (NOT_RUN, see `README.md`).
 
+An independent code audit (2026-09-18, see `docs/AUDIT_2026-09-18.md`)
+found that one of the two simulators (`simulator_ema_cross.py`, used by
+the EMA-crossover and Bollinger strategies) never actually called
+`new_idea_within_risk_caps` -- the formulas below were correctly
+*implemented*, but not fully *wired in*. This is fixed; the formulas
+themselves were correct throughout and did not change.
+
 ## Floors (account currency, USD; `I = 10000`, `B0` = balance at 00:00 Europe/Prague)
 
 | Floor | Formula |

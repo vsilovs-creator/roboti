@@ -200,8 +200,13 @@ void OnTick()
       SaveRiskState(g_state); // persist the stop BEFORE cancelling/closing, per spec section 4
       FtmoLog("RISK", "STOP TRIGGERED equity=" + DoubleToString(equity, 2) +
               " daily=" + (g_state.dailyStopActive ? "1" : "0") + " total=" + (g_state.totalStopActive ? "1" : "0"));
-      if(EnableLiveTrading) CloseAllManagedPositionsAndPendings();
      }
+   // FIXED 2026-09-18 (independent code audit): retry every tick while the
+   // stop is active and anything is still open, not just on the tick the
+   // stop first triggers -- see FTMO_Swing_EA_EmaCross.mq4's matching fix
+   // for the full reasoning.
+   if(StopActive(g_state) && OrdersTotal() > 0 && EnableLiveTrading)
+      CloseAllPositionsAndPendingsAccountWide();
 
    if(EnableLiveTrading) ForceSessionCloseIfDue();
 

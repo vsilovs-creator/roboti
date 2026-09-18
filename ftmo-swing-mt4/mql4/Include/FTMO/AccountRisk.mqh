@@ -38,7 +38,14 @@ double ScanAccountWideRemainingRiskUsd(double &foreignUnknownRiskFlag)
    for(int i = 0; i < OrdersTotal(); i++)
      {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
-      if(OrderType() != OP_BUY && OrderType() != OP_SELL) continue; // ignore pendings here
+      // Pending orders are skipped here, and pendingWorstCaseUsd is always
+      // passed as 0.0 by both EAs -- deliberate for THIS design, since
+      // neither strategy ever places a pending order (market entries only).
+      // If a future strategy adds pending orders, this must be revisited:
+      // a foreign pending order's activation risk would then need to be
+      // scanned and included, not just skipped (independent code audit,
+      // 2026-09-18).
+      if(OrderType() != OP_BUY && OrderType() != OP_SELL) continue;
       double sl = OrderStopLoss();
       if(sl == 0.0)
         {

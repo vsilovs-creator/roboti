@@ -6,12 +6,29 @@
 // per-terminal rather than per-account, so a file keyed by account number
 // is used instead).
 // NOT_RUN: never compiled/tested. Mirrors ../../python/ftmo_sim/risk_state.py.
+//
+// FIXED 2026-09-18 (independent code audit): the previous version read the
+// file back with `while(!FileIsEnding) raw += FileReadString(handle)` and
+// then split the concatenated result on '\n' -- but FileReadString already
+// strips the line terminator from each call's return value, so `raw` never
+// contained a single '\n' and StringSplit always returned exactly one
+// element. LoadRiskState therefore reported "corrupt state file" and
+// returned false on EVERY read after the very first save, which (per
+// FTMO_Swing_EA_EmaCross.mq4's OnInit) would have made the EA refuse to
+// start on any restart. Also renamed away from the ".json" extension --
+// this was never real JSON, only positional plain text, and naming it that
+// was misleading. This has NOT been compiled or run (no MetaEditor/MT4
+// available); the fix is a structural correction based on re-reading the
+// FileReadString/FileWrite documentation, not a verified test run.
 
 #ifndef FTMO_PERSISTENCE_MQH
 #define FTMO_PERSISTENCE_MQH
 
 #include "Config.mqh"
 #include "AccountRisk.mqh"
+
+#define FTMO_STATE_FIELD_SEP "|"     // between the 10 top-level fields
+#define FTMO_STATE_LIST_SEP  ";"     // inside entriesUsedToday's symbol list
 
 struct RiskState
   {
@@ -24,12 +41,28 @@ struct RiskState
    bool   totalStopActive;
    string totalStopReason;
    bool   historyReconciled;
-   string entriesUsedToday;    // comma-separated symbols, cleared on rollover
+   string entriesUsedToday;    // FTMO_STATE_LIST_SEP-joined symbols, cleared on rollover
   };
 
 string StateFilePath()
   {
-   return "FTMO_RiskState_" + IntegerToString(AccountNumber()) + ".json";
+   // Not JSON -- a single '|'-delimited line. ".state" avoids implying a
+   // format this file never actually used.
+   return "FTMO_RiskState_" + IntegerToString(AccountNumber()) + ".state";
+  }
+
+void InitFreshRiskState(RiskState &state)
+  {
+   state.accountNumber      = AccountNumber();
+   state.serverName         = AccountServer();
+   state.configVersion      = ConfigVersion;
+   state.currentFtmoDay     = "";
+   state.balanceAtMidnight  = 0.0;
+   state.dailyStopActive    = false;
+   state.totalStopActive    = false;
+   state.totalStopReason    = "";
+   state.historyReconciled  = false; // must be explicitly set true after a verified reconstruction
+   state.entriesUsedToday   = "";
   }
 
 bool LoadRiskState(RiskState &state)
@@ -37,36 +70,34 @@ bool LoadRiskState(RiskState &state)
    int handle = FileOpen(StateFilePath(), FILE_READ | FILE_TXT);
    if(handle == INVALID_HANDLE)
      {
-      state.accountNumber      = AccountNumber();
-      state.serverName         = AccountServer();
-      state.configVersion      = ConfigVersion;
-      state.currentFtmoDay     = "";
-      state.balanceAtMidnight  = 0.0;
-      state.dailyStopActive    = false;
-      state.totalStopActive    = false;
-      state.totalStopReason    = "";
-      state.historyReconciled  = false; // must be explicitly set true after a verified reconstruction
-      state.entriesUsedToday   = "";
+      InitFreshRiskState(state);
       return true; // fresh state, not an error
      }
-   string raw = "";
-   while(!FileIsEnding(handle)) raw += FileReadString(handle);
+   // The whole persisted state is ONE line -- a single FileReadString call
+   // reads exactly that line (up to the line break) regardless of any
+   // comma/delimiter ambiguity between MQL4 file modes, which is precisely
+   // why a multi-line, multi-call read (the previous, broken version) is
+   // avoided here.
+   string line = FileReadString(handle);
    FileClose(handle);
-   // Minimal hand-rolled parse (no JSON library in stock MQL4): fields are
-   // written one per line by SaveRiskState() in a fixed order.
-   string lines[];
-   int n = StringSplit(raw, '\n', lines);
-   if(n < 9) { Print("FTMO: corrupt state file, refusing to trust it"); return false; }
-   state.accountNumber     = StrToInteger(lines[0]);
-   state.serverName        = lines[1];
-   state.configVersion     = lines[2];
-   state.currentFtmoDay    = lines[3];
-   state.balanceAtMidnight = StrToDouble(lines[4]);
-   state.dailyStopActive   = (lines[5] == "1");
-   state.totalStopActive   = (lines[6] == "1");
-   state.totalStopReason   = lines[7];
-   state.historyReconciled = (lines[8] == "1");
-   state.entriesUsedToday  = (n > 9) ? lines[9] : "";
+
+   string parts[];
+   int n = StringSplit(line, StringGetCharacter(FTMO_STATE_FIELD_SEP, 0), parts);
+   if(n < 9)
+     {
+      Print("FTMO: corrupt or empty state file (", n, " fields), refusing to trust it");
+      return false;
+     }
+   state.accountNumber     = StrToInteger(parts[0]);
+   state.serverName        = parts[1];
+   state.configVersion     = parts[2];
+   state.currentFtmoDay    = parts[3];
+   state.balanceAtMidnight = StrToDouble(parts[4]);
+   state.dailyStopActive   = (parts[5] == "1");
+   state.totalStopActive   = (parts[6] == "1");
+   state.totalStopReason   = parts[7];
+   state.historyReconciled = (parts[8] == "1");
+   state.entriesUsedToday  = (n > 9) ? parts[9] : "";
 
    if(state.accountNumber != AccountNumber() || state.serverName != AccountServer())
      {
@@ -80,18 +111,25 @@ bool LoadRiskState(RiskState &state)
 
 bool SaveRiskState(const RiskState &state)
   {
+   // NOTE: not an atomic write (no temp-file-then-rename here) -- a crash
+   // mid-write could leave a truncated/corrupt line, which LoadRiskState
+   // detects (n<9) and refuses rather than silently trusting. Accepted,
+   // documented limitation; a fully atomic write needs verifying MQL4's
+   // FileMove semantics against a real terminal, which this environment
+   // cannot do.
    int handle = FileOpen(StateFilePath(), FILE_WRITE | FILE_TXT);
    if(handle == INVALID_HANDLE) { Print("FTMO: cannot write state file, errno=", GetLastError()); return false; }
-   FileWrite(handle, state.accountNumber);
-   FileWrite(handle, state.serverName);
-   FileWrite(handle, state.configVersion);
-   FileWrite(handle, state.currentFtmoDay);
-   FileWrite(handle, DoubleToString(state.balanceAtMidnight, 2));
-   FileWrite(handle, state.dailyStopActive ? "1" : "0");
-   FileWrite(handle, state.totalStopActive ? "1" : "0");
-   FileWrite(handle, state.totalStopReason);
-   FileWrite(handle, state.historyReconciled ? "1" : "0");
-   FileWrite(handle, state.entriesUsedToday);
+   string line = IntegerToString(state.accountNumber) + FTMO_STATE_FIELD_SEP +
+                 state.serverName + FTMO_STATE_FIELD_SEP +
+                 state.configVersion + FTMO_STATE_FIELD_SEP +
+                 state.currentFtmoDay + FTMO_STATE_FIELD_SEP +
+                 DoubleToString(state.balanceAtMidnight, 2) + FTMO_STATE_FIELD_SEP +
+                 (state.dailyStopActive ? "1" : "0") + FTMO_STATE_FIELD_SEP +
+                 (state.totalStopActive ? "1" : "0") + FTMO_STATE_FIELD_SEP +
+                 state.totalStopReason + FTMO_STATE_FIELD_SEP +
+                 (state.historyReconciled ? "1" : "0") + FTMO_STATE_FIELD_SEP +
+                 state.entriesUsedToday;
+   FileWrite(handle, line);
    FileClose(handle);
    return true;
   }
@@ -138,7 +176,7 @@ bool SymbolUsedToday(const RiskState &state, string symbol)
 void RegisterEntry(RiskState &state, string symbol)
   {
    if(!SymbolUsedToday(state, symbol))
-      state.entriesUsedToday = state.entriesUsedToday + symbol + ",";
+      state.entriesUsedToday = state.entriesUsedToday + symbol + FTMO_STATE_LIST_SEP;
   }
 
 bool CanOpenNewEntry(const RiskState &state, string symbol)

@@ -37,7 +37,10 @@ from ftmo_sim.strategy_bb_reversion import BbReversionEngine
 FULL_CALENDAR_MONTHS = {(2026, 8)}
 
 
-def summarize(name, closed_trades, equity_curve, final_balance, initial_balance):
+def summarize(name, result, initial_balance):
+    closed_trades = result.closed_trades
+    equity_curve = result.equity_curve
+    final_balance = result.final_balance
     n = len(closed_trades)
     wins = [t for t in closed_trades if t.net_pnl_usd > 0]
     losses = [t for t in closed_trades if t.net_pnl_usd <= 0]
@@ -49,11 +52,16 @@ def summarize(name, closed_trades, equity_curve, final_balance, initial_balance)
     max_dd = max_drawdown_from_peak(equity_curve)
     low_eq = lowest_equity(equity_curve)
     monthly = build_monthly_table(closed_trades, FULL_CALENDAR_MONTHS)
+    # total_swap_usd / open_positions_at_end only exist on H1-strategy
+    # results (simulator_ema_cross.py); the London baseline never holds
+    # overnight (enforce_session_close=True), so these default to zero/empty.
+    total_swap = getattr(result, "total_swap_usd", 0.0)
+    open_at_end = getattr(result, "open_positions_at_end", {})
     return {
         "name": name, "trades": n, "wins": len(wins), "win_rate_pct": win_rate,
         "net_usd": net, "net_pct": 100.0 * net / initial_balance,
         "profit_factor": pf, "max_dd_usd": max_dd, "lowest_equity": low_eq,
-        "monthly": monthly,
+        "monthly": monthly, "total_swap_usd": total_swap, "open_at_end": len(open_at_end),
     }
 
 
@@ -91,9 +99,9 @@ def main() -> None:
     bb = run_h1_signal_simulation(cfg, m1, engine_factory=BbReversionEngine, account_number=900000003, server_name="OFFLINE-SIM-BB")
 
     summaries = [
-        summarize("London Range Breakout + Retest v1 (baseline)", baseline.closed_trades, baseline.equity_curve, baseline.final_balance, cfg.initial_balance),
-        summarize("EMA(20/50) H1 crossover", ema.closed_trades, ema.equity_curve, ema.final_balance, cfg.initial_balance),
-        summarize("Bollinger(20,2) H1 mean-reversion", bb.closed_trades, bb.equity_curve, bb.final_balance, cfg.initial_balance),
+        summarize("London Range Breakout + Retest v1 (baseline)", baseline, cfg.initial_balance),
+        summarize("EMA(20/50) H1 crossover", ema, cfg.initial_balance),
+        summarize("Bollinger(20,2) H1 mean-reversion", bb, cfg.initial_balance),
     ]
 
     write_trades_csv(out_dir / "trades_baseline.csv", baseline.closed_trades)
@@ -109,13 +117,14 @@ def main() -> None:
         "(August 2026). **None of these results are evidence of a repeatable "
         "monthly result** -- see docs/UNKNOWNS.md and spec section 10.",
         "",
-        "| Strategy | Trades | Win rate | Net USD | Net % | Profit factor | Max DD USD | Lowest equity |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Strategy | Trades | Win rate | Net USD | Net % | Profit factor | Max DD USD | Lowest equity | Swap USD | Open at end |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for s in summaries:
         lines.append(
             f"| {s['name']} | {s['trades']} | {s['win_rate_pct']:.1f}% | {s['net_usd']:+.2f} | "
-            f"{s['net_pct']:+.2f}% | {s['profit_factor']:.2f} | {s['max_dd_usd']:.2f} | {s['lowest_equity']:.2f} |"
+            f"{s['net_pct']:+.2f}% | {s['profit_factor']:.2f} | {s['max_dd_usd']:.2f} | {s['lowest_equity']:.2f} | "
+            f"{s['total_swap_usd']:+.2f} | {s['open_at_end']} |"
         )
     lines.append("")
     lines.append("## Monthly net USD by strategy")
@@ -145,7 +154,7 @@ def main() -> None:
         f"equity ({bb['lowest_equity']:.2f} USD) came within "
         f"{bb['lowest_equity'] - 9200.0:.2f} USD of the static 9200 total "
         f"working floor -- no breach occurred, but its combination of high "
-        f"trade frequency (118 trades) and negative expectancy is the "
+        f"trade frequency ({bb['trades']} trades) and negative expectancy is the "
         f"riskiest of the three by a wide margin, independent of its net "
         f"P/L number."
     )

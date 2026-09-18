@@ -1,11 +1,14 @@
 # Handoff: find a strategy with genuine (not overfit) positive expectancy
 
-> **See `docs/FULL_REPORT.md` for the complete, more thorough project
-> report and handoff brief** (background, confirmed facts, data audit,
-> risk engine, full metrics for all three strategies tried, and this same
-> search-continuation task). This file remains as the narrower,
-> search-focused version written first; FULL_REPORT.md supersedes it for a
-> full handoff but the content below is still accurate.
+> **Use `docs/FULL_REPORT.md` instead -- it supersedes this file.** This
+> file's numbers and its "38% = exactly what chance would produce" framing
+> both predate an independent code audit (2026-09-18, see
+> `docs/AUDIT_2026-09-18.md`): two P0 simulator bugs changed the underlying
+> results, and the audit correctly pushed back on that framing as
+> overstated (there was no null model behind it). FULL_REPORT.md has the
+> corrected numbers and the corrected framing. This file is kept only as a
+> record of the earlier, narrower version -- do not treat anything below
+> as current.
 
 Self-contained brief for a different model/agent to continue this search.
 Read this whole file before doing anything -- it exists specifically

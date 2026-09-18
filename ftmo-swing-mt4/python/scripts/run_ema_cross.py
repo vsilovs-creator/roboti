@@ -82,10 +82,17 @@ def main() -> None:
         for e in result.risk_stop_events:
             w.writerow(list(e))
 
+    with (out_dir / "swap_ledger.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["utc_time", "symbol", "direction", "lots", "swap_usd"])
+        for e in result.swap_ledger:
+            w.writerow(list(e))
+
     n = len(result.closed_trades)
     wins = [t for t in result.closed_trades if t.net_pnl_usd > 0]
     losses = [t for t in result.closed_trades if t.net_pnl_usd <= 0]
-    net = result.final_balance - cfg.initial_balance
+    net_realized = result.final_balance - cfg.initial_balance
+    net_by_equity = result.final_equity - cfg.initial_balance
     gross_win = sum(t.net_pnl_usd for t in wins)
     gross_loss = -sum(t.net_pnl_usd for t in losses)
     pf = (gross_win / gross_loss) if gross_loss > 0 else (float("inf") if gross_win > 0 else float("nan"))
@@ -98,7 +105,13 @@ def main() -> None:
         "~2-month sample; no further historical data will be supplied, so "
         "this cannot be re-validated out-of-sample. See docs/UNKNOWNS.md.",
         "",
-        f"- Net: {net:+.2f} USD ({100*net/cfg.initial_balance:+.2f}%)",
+        f"- Net (realized balance only): {net_realized:+.2f} USD ({100*net_realized/cfg.initial_balance:+.2f}%)",
+        f"- Net (final equity, includes any still-open position's floating P/L): "
+        f"{net_by_equity:+.2f} USD ({100*net_by_equity/cfg.initial_balance:+.2f}%)",
+        f"- Open positions at end of sample: {len(result.open_positions_at_end)}"
+        + (f" ({', '.join(result.open_positions_at_end.keys())})" if result.open_positions_at_end else ""),
+        f"- Total swap paid/credited (nights held, tripled on Wednesday): {result.total_swap_usd:+.2f} USD "
+        f"over {len(result.swap_ledger)} nights -- approximation, see docs/UNKNOWNS.md",
         f"- Trades: {n}, wins: {len(wins)} ({100*len(wins)/n:.1f}%)" if n else "- Trades: 0",
         f"- Profit factor: {pf:.2f}" if n else "- Profit factor: N/A",
         f"- Max drawdown from peak: {max_drawdown_from_peak(result.equity_curve):.2f} USD",
@@ -106,7 +119,7 @@ def main() -> None:
         f"{cfg.ftmo_limits.robot_total_working_floor_usd:.2f})",
         f"- Daily/total risk-floor breaches: {len([e for e in result.risk_stop_events if e[1] in ('DAILY_STOP', 'TOTAL_STOP')])}",
         "",
-        "## Monthly",
+        "## Monthly (realized trades only -- excludes any still-open position)",
         "| Year-Month | Full month? | Net USD | Trades |",
         "|---|---|---|---|",
     ]
@@ -116,7 +129,7 @@ def main() -> None:
     report_md = "\n".join(lines) + "\n"
     (out_dir / "REPORT.md").write_text(report_md)
     print(report_md)
-    print(f"Wrote trades.csv, skipped_signals.csv, risk_events.csv, REPORT.md to {out_dir}")
+    print(f"Wrote trades.csv, skipped_signals.csv, risk_events.csv, swap_ledger.csv, REPORT.md to {out_dir}")
 
 
 if __name__ == "__main__":

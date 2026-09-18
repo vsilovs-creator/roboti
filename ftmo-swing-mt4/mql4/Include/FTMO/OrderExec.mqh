@@ -76,9 +76,33 @@ int OpenMarketOrderWithRetry(
             CloseOrderWithRetry(ticket);
             return -1;
            }
-         if(!OrderModify(ticket, actualPrice, sl, tp, 0, clrNONE))
-            FtmoLog("EXEC", symbol + " OrderModify(SL/TP) failed, errno=" + IntegerToString(GetLastError()) +
-                    " -- position is OPEN WITHOUT PROTECTION, must be retried by the risk controller every tick");
+         // FIXED 2026-09-18 (independent code audit): a failed OrderModify
+         // here used to just log and return the ticket anyway, leaving the
+         // position genuinely unprotected with nothing in the codebase that
+         // actually retried it later despite the log message's claim. Now:
+         // retry the SL/TP application a bounded number of times immediately,
+         // and if it still hasn't succeeded, close the position rather than
+         // hand back an unprotected one -- per spec section 4, a failed SL
+         // must lead to a controlled retry OR closure, never silent exposure.
+         bool protected_ = false;
+         for(int protectAttempt = 1; protectAttempt <= MAX_ORDER_RETRIES; protectAttempt++)
+           {
+            if(OrderModify(ticket, actualPrice, sl, tp, 0, clrNONE)) { protected_ = true; break; }
+            int modifyErr = GetLastError();
+            FtmoLog("EXEC", symbol + " OrderModify(SL/TP) attempt " + IntegerToString(protectAttempt) +
+                    " failed, errno=" + IntegerToString(modifyErr));
+            if(!IsRetryableError(modifyErr)) break;
+            Sleep(RETRY_SLEEP_MS);
+           }
+         if(!protected_)
+           {
+            FtmoLog("EXEC", symbol + " could not apply SL/TP after " + IntegerToString(MAX_ORDER_RETRIES) +
+                    " attempts -- closing the position rather than leaving it unprotected");
+            if(!CloseOrderWithRetry(ticket))
+               FtmoLog("EXEC", symbol + " FAILED to close the unprotected ticket=" + IntegerToString(ticket) +
+                       " -- risk controller's account-wide scan will still see its real (missing) SL and block new entries");
+            return -1;
+           }
          return ticket;
         }
 
@@ -115,28 +139,42 @@ bool CloseOrderWithRetry(int ticket)
    return false;
   }
 
-// Closes every position under this EA's MagicNumber (both symbols) and
-// cancels pending orders -- used by the risk controller once a stop is
-// persisted. Continues on partial failure and logs every ticket that could
-// not be closed so it is retried on the next tick rather than silently
-// dropped.
-void CloseAllManagedPositionsAndPendings()
+// Closes EVERY position and cancels EVERY pending order on the ACCOUNT --
+// not filtered by MagicNumber -- used by the risk controller once a stop
+// is persisted. Account-wide, not just-this-EA's-orders, on purpose: spec
+// section 4 requires monitoring "the whole account, not just the EA's
+// MagicNumber" and this design assumes a dedicated account; if a foreign
+// (manual, or another EA's) position is what pushed equity into the stop,
+// leaving it open while only closing this EA's own orders would defeat the
+// entire point of the stop. CHANGED 2026-09-18 (independent code audit) --
+// previously filtered by MagicNumber, which this reasoning does not
+// support. Returns false if anything could not be closed/deleted so the
+// caller can retry every tick (see FTMO_Swing_EA*.mq4's OnTick) rather than
+// treating the stop as fully handled from a single attempt.
+bool CloseAllPositionsAndPendingsAccountWide()
   {
+   bool allDone = true;
    for(int i = OrdersTotal() - 1; i >= 0; i--)
      {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
-      if(OrderMagicNumber() != MagicNumber) continue;
       if(OrderType() == OP_BUY || OrderType() == OP_SELL)
         {
          if(!CloseOrderWithRetry(OrderTicket()))
+           {
             FtmoLog("RISK", "FAILED to close ticket=" + IntegerToString(OrderTicket()) + " -- will retry next tick");
+            allDone = false;
+           }
         }
       else
         {
          if(!OrderDelete(OrderTicket()))
+           {
             FtmoLog("RISK", "FAILED to delete pending ticket=" + IntegerToString(OrderTicket()) + " -- will retry next tick");
+            allDone = false;
+           }
         }
      }
+   return allDone;
   }
 
 #endif

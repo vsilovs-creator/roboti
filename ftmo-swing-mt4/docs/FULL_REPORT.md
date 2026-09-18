@@ -13,6 +13,15 @@ Repository: `https://github.com/vsilovs-creator/roboti`, path
 `ftmo-swing-mt4/`. This document repeats the key facts and numbers inline so
 it stands alone, but the repo has the full code, tests, and raw data.
 
+**Updated 2026-09-18 after an independent code audit** found two P0 bugs
+in the offline simulators (an entry candle's own SL/TP was never checked;
+configured portfolio/correlated-group risk caps were not enforced in one
+of the two simulators) that affected every number in an earlier version of
+this report. Both are fixed, independently reproduced before and after the
+fix, and every number below is from the corrected code. See
+`docs/AUDIT_2026-09-18.md` for the full detail -- this section only exists
+so a reader of an older copy of this report knows it's stale.
+
 ---
 
 ## 1. What this project is
@@ -118,11 +127,11 @@ closed M5 candle; retest confirmation within next 6 M5 candles; H1 EMA200
 direction filter; SL = retest extreme +/- 0.10*ATR14(M5); TP = 2R; one trade
 per instrument per London day; force-close at 16:00 London.
 
-- Net: **-485.99 USD (-4.86%)**. Trades: 20. Win rate: 25.0%.
-- Avg win R: 0.87. Avg loss R: -1.59. Expectancy: -24.30 USD/trade. Profit factor: 0.18.
-- Max drawdown from peak: 485.99 USD. Lowest equity: 9514.01 (margin to 9200 floor: +314.01).
-- 0 risk-floor breaches. 0/20 same-bar SL/TP ambiguity. 7/20 gap fills.
-- Monthly: Jul (partial) -86.94/1 trade, **Aug (full month) -288.28/13 trades**, Sep (partial) -110.78/6 trades.
+- Net: **-446.71 USD (-4.47%)**. Trades: 20. Win rate: 20.0%.
+- Avg win R: 1.06. Avg loss R: -1.38. Expectancy: -22.34 USD/trade. Profit factor: 0.19.
+- Max drawdown from peak: 446.71 USD. Lowest equity: 9553.29 (margin to 9200 floor: +353.29).
+- 0 risk-floor breaches. 1/20 same-bar SL/TP ambiguity. 3/20 gap fills.
+- Monthly: Jul (partial) -75.60/1 trade, **Aug (full month) -272.88/13 trades**, Sep (partial) -98.23/6 trades.
 - 0/1 full calendar months met the >=2000 USD / 20% target.
 
 ### 5b. EMA(20/50) H1 crossover (chosen as "least-bad of three", NOT validated)
@@ -130,12 +139,16 @@ per instrument per London day; force-close at 16:00 London.
 Standard trend crossover; SL = 1.5x ATR14(H1); TP = 3R; holds positions
 overnight/across the 16:00 London boundary (swing-style).
 
-- Net: **-257.98 USD (-2.58%)**. Trades: 28. Win rate: 17.9%.
-- Avg win R: 2.65. Avg loss R: -1.04. Expectancy: -9.21 USD/trade. Profit factor: 0.55.
-- Max drawdown from peak: 366.25 USD. Lowest equity: 9742.02 (margin to 9200 floor: +542.02).
-- 0 risk-floor breaches. 0/28 same-bar ambiguity. 0/28 gap fills.
-- 6 signals skipped (symbol already had an open position).
-- Monthly: Jul (partial) **+26.65/6 trades**, Aug (full month) -136.51/16 trades, Sep (partial) -148.11/6 trades.
+- Net: **-296.65 USD (-2.97%)**, including **-23.27 USD swap** accrued
+  over 26 nights held (see `docs/AUDIT_2026-09-18.md` P1-5 -- an
+  approximation, not a confirmed swap-timing model). Trades: 25. Win rate: 16.0%.
+- Avg win R: 2.67. Avg loss R: -1.04. Expectancy: -11.87 USD/trade. Profit factor: 0.48.
+- Max drawdown from peak: 365.16 USD. Lowest equity: 9703.35 (margin to 9200 floor: +503.35).
+- 0 risk-floor breaches. 0/25 same-bar ambiguity. 0/25 gap fills. 0 positions
+  still open at the end of the sample.
+- 6 signals skipped (symbol already had an open position), 3 skipped by the
+  correlated-group/portfolio risk cap.
+- Monthly: Jul (partial) **+26.65/6 trades**, Aug (full month) -175.29/14 trades, Sep (partial) -124.74/5 trades.
 - 0/1 full calendar months met target.
 - This is the strategy currently marked `strategies.active` in the config
   and ported to MQL4 (`mql4/Experts/FTMO_Swing_EA_EmaCross.mq4`, NOT_RUN),
@@ -147,18 +160,19 @@ overnight/across the 16:00 London boundary (swing-style).
 Fade a close outside the 20-period/2-stddev band toward the middle band; SL
 = 0.5x ATR14(H1) beyond the breached band.
 
-- Net: **-780.79 USD (-7.81%)**. Trades: 118 (much higher frequency than
-  the other two). Win rate: 23.7%.
-- Avg win R: 2.26. Avg loss R: -1.06. Expectancy: -6.62 USD/trade. Profit factor: 0.66.
-- Max drawdown from peak: 871.97 USD. **Lowest equity: 9219.21 -- only 19.21
+- Net: **-784.45 USD (-7.84%)**, including -52.42 USD swap. Trades: 84
+  (much higher frequency than the other two). Win rate: 21.4%.
+- Avg win R: 2.21. Avg loss R: -1.06. Expectancy: -9.34 USD/trade. Profit factor: 0.57.
+- Max drawdown from peak: 867.73 USD. **Lowest equity: 9215.55 -- only 15.55
   USD above the static 9200 total floor.** No breach occurred, but this is
   the riskiest of the three by a wide margin (high frequency x negative
   expectancy), independent of its net P/L.
-- 1/118 same-bar ambiguity. 4/118 gap fills.
-- 105 signals skipped by the pre-trade projected-equity check, 71 skipped
-  because a position was already open -- this strategy's frequency runs
-  into the risk engine's own limits constantly.
-- Monthly: Jul (partial) -336.37/43 trades, Aug (full month) -444.43/75 trades. (No Sep trades survived the September partial window in this run.)
+- 0/84 same-bar ambiguity. 1/84 gap fills.
+- 130 signals skipped by the pre-trade projected-equity check, 59 skipped
+  because a position was already open, 21 skipped by the correlated-group/
+  portfolio risk cap -- this strategy's frequency runs into the risk
+  engine's own limits constantly.
+- Monthly: Jul (partial) -267.52/36 trades, Aug (full month) -464.51/48 trades. (No Sep trades survived the September partial window in this run.)
 - 0/1 full calendar months met target.
 
 ## 6. The multiple-comparisons / overfitting demonstration
@@ -173,21 +187,35 @@ of the EMA-crossover strategy (fast period in {10,20,30}, slow period in
 {40,50,100}, ATR-SL multiple in {1.0,1.5,2.0}, TP-R multiple in
 {1.5,2.0,3.0}) against the exact same fixed sample.
 
-**Result: 31 of 81 (38%) came out net positive.** The best:
-`fast=30, slow=100, atr_sl=2.0, tp_r=3.0` -> +397.19 USD (+3.97%), 10
-trades. The worst: `fast=10, slow=50, atr_sl=1.0, tp_r=2.0` -> -674.25 USD.
-Full grid: `reports/run_005_overfitting_sweep_demo/sweep_results.csv`.
+**Result: 21 of 81 (26%) came out net positive.** The best:
+`fast=30, slow=100, atr_sl=2.0, tp_r=3.0` -> +385.95 USD (+3.86%), 10
+trades. The worst: `fast=10, slow=50, atr_sl=1.0, tp_r=2.0` -> -597.16 USD.
+Full grid: `reports/run_009_overfitting_sweep_corrected/sweep_results.csv`.
 
-**Conclusion, and the reason this matters for continuing the work:** a 38%
-hit rate from trying arbitrary parameter combinations on a fixed
-~40-trading-day sample is exactly what chance alone would produce, not
-evidence of a real edge. None of these 31 "positive" results have been or
-should be adopted. **Any continuation of this search that just tries more
-parameters or more strategies and reports the best-looking number will
-produce the same kind of meaningless result, guaranteed, and should be
-recognized as such rather than presented as a finding.**
+**Conclusion, stated no more strongly than the evidence supports (revised
+after this report's own independent code audit -- see
+`docs/AUDIT_2026-09-18.md` P1-8, which correctly pointed out an earlier
+version overstated this):** a quarter of arbitrary parameter combinations
+coming out positive on a fixed ~40-trading-day sample is a real reason for
+caution about any single "positive" result from this family of strategies
+on this sample -- with enough tries, something is likely to look positive
+whether or not there's a real edge underneath. That is *not* a formal
+proof that the positive results are noise (there is no null model or
+dependency-aware significance test behind the 26% figure), and the short
+sample doesn't prove the strategy family can't work either. None of these
+21 "positive" results have been or should be adopted on this evidence
+alone. **Any continuation of this search that just tries more parameters
+or more strategies and reports the best-looking number without addressing
+that caveat will produce an equally uninterpretable result -- see section 8
+for what a rigorous version of this test would need.**
 
 ## 7. MQL4 status (all NOT_RUN)
+
+The 2026-09-18 audit found and structurally fixed two real bugs here (a
+persisted-state read bug that would have broken every EA restart, and an
+unprotected-position/stop-retry gap) -- see `docs/AUDIT_2026-09-18.md`
+P0-3/P0-4. Neither the bugs nor the fixes have been compiled or run; this
+whole section remains NOT_RUN.
 
 - `mql4/Include/FTMO/`: `Config.mqh`, `TimeUtils.mqh`, `SymbolSpec.mqh`,
   `AccountRisk.mqh`, `OrderExec.mqh`, `Persistence.mqh`, `Logging.mqh`
@@ -243,9 +271,12 @@ something trustworthy rather than a bigger version of the section-6 trap:
    a validated monthly-return claim). This is a legitimate and useful
    deliverable, not a failure to answer the question.
 5. If more strategies or parameters are tried anyway, **pre-register how
-   many and report all of them**, exactly as section 6 does (38% positive
-   rate stated up front, not just the +397 USD headline) -- never report
-   only the best result from a search.
+   many and report all of them**, exactly as section 6 does (26% positive
+   rate stated up front, not just the +386 USD headline) -- never report
+   only the best result from a search. Better still, pair it with an actual
+   significance test (a block-resampled permutation test against this same
+   grid, for instance) rather than reporting the raw hit rate alone --
+   section 6's own audit critique (P1-8) applies here too.
 
 ### Explicit do-nots
 

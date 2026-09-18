@@ -10,13 +10,19 @@ review (MQL4, marked **NOT_RUN**).
 Account: FTMO 2-Step Swing, USD, 10 000 USD starting balance. Instruments:
 EURUSD + GBPUSD.
 
+**2026-09-18: an independent code audit found two P0 bugs in the offline
+simulators that affected every number below through an earlier version of
+this README.** Both are fixed, all affected results recomputed, and this
+document reflects the corrected numbers. See `docs/AUDIT_2026-09-18.md` for
+what was found, how it was independently reproduced, and what changed.
+
 ## Chosen strategy going forward: EMA(20/50) H1 crossover
 
 Per the account owner's instruction (2026-09-18, "turpinam to strategiju ar
 kuru ir lielaka pelna" -- continue with whichever strategy has the biggest
 profit) and the fact that **no further historical data will be supplied**:
 of the three strategies compared below, EMA(20/50) H1 crossover had the
-smallest loss (-257.98 USD / -2.58%) on the only available ~2-month sample.
+smallest loss (-296.65 USD / -2.97%) on the only available ~2-month sample.
 It is now `strategies.active` in `config/config.example.json`, has its own
 runner (`python/scripts/run_ema_cross.py`), and has been ported to MQL4
 (`mql4/Experts/FTMO_Swing_EA_EmaCross.mq4`, NOT_RUN).
@@ -38,37 +44,39 @@ before treating this as more than it is.
   result in this repo is now permanently limited to that window and cannot
   be walk-forward validated against fresh data.
 
-Applying the clock and commission to the baseline **changed the result
-materially** -- the corrected clock shifts which candles fall inside the
-London range/entry windows, and the commission adds a real cost on every
-trade. See `reports/run_001/` (superseded, pre-correction) vs.
-`reports/run_002_confirmed_tz_commission/` (current).
+Applying the clock and commission to the baseline changed the result
+materially, and fixing the two P0 simulator bugs (see
+`docs/AUDIT_2026-09-18.md`) changed it again. See `reports/README.md` for
+the full history: `run_001` and `run_002_confirmed_tz_commission` are both
+superseded; `run_006_baseline_corrected` is current.
 
 ## What was actually run here
 
 - **Data audit** (`python/ftmo_sim/data_audit.py`) against the real,
   SHA-256-verified `data/raw/EURUSD1.csv` / `GBPUSD1.csv` -- independently
   reproduces the task's own audit table exactly. See `docs/DATA_AUDIT.md`.
-- **54 pytest tests**, all passing, covering the account-risk floors, the
+- **60 pytest tests**, all passing, covering the account-risk floors, the
   pre-trade projected-equity check, the daily/total stop state machine
   (restart, second-instance guard, history reconciliation), confirmed
   timezone/DST handling, symbol/lot-sizing math, all three strategies'
-  signal state machines, and order execution (same-bar SL/TP collision, gap
-  fills, spread/commission accounting, session-close on/off). See
-  `docs/RISK_SPEC.md` for the mapping to the spec's 11 mandated test
-  scenarios (10 of 11 -- everything except the MT4-only OrderSend-timeout
-  scenario, which needs a real terminal).
+  signal state machines, order execution (same-bar SL/TP collision, gap
+  fills, spread/commission accounting, session-close on/off), swap
+  accrual, and the two P0 simulator bugs found by the 2026-09-18 audit
+  (regression tests pin both fixes down). See `docs/RISK_SPEC.md` for the
+  mapping to the spec's 11 mandated test scenarios (10 of 11 -- everything
+  except the MT4-only OrderSend-timeout scenario, which needs a real
+  terminal).
 - **A search for a profitable strategy on this sample**, per the account
   owner's explicit request ("meklē peļņu ar jebkuru tev zināmo stratēģiju").
   Three independent, well-known strategies at standard textbook parameters
   were run on the exact same data, account-wide risk engine, and confirmed
-  costs -- see `reports/run_003_strategy_comparison/COMPARISON.md`:
+  costs -- see `reports/run_008_strategy_comparison_corrected/COMPARISON.md`:
 
   | Strategy | Trades | Win rate | Net USD | Profit factor |
   |---|---|---|---|---|
-  | London Range Breakout + Retest v1 | 20 | 25.0% | -485.99 | 0.18 |
-  | **EMA(20/50) H1 crossover (chosen)** | 28 | 17.9% | **-257.98** | 0.55 |
-  | Bollinger(20,2) H1 mean-reversion | 118 | 23.7% | -780.79 | 0.66 |
+  | London Range Breakout + Retest v1 | 20 | 20.0% | -446.71 | 0.19 |
+  | **EMA(20/50) H1 crossover (chosen)** | 25 | 16.0% | **-296.65** | 0.48 |
+  | Bollinger(20,2) H1 mean-reversion | 84 | 21.4% | -784.45 | 0.57 |
 
   **All three lose money on this exact ~2-month sample after real costs.**
   This was a comparison across distinct known strategies at standard
@@ -77,8 +85,8 @@ trade. See `reports/run_001/` (superseded, pre-correction) vs.
   dataset, and hunting for a locally profitable parameter combination on
   ~40 trading days would produce a curve-fit number, not a finding.
   - **Risk observation:** the Bollinger mean-reversion run's lowest equity
-    (9219.21 USD) came within 19.21 USD of the static 9200 total working
-    floor -- no breach occurred, but its high trade frequency (118 trades)
+    (9215.55 USD) came within 15.55 USD of the static 9200 total working
+    floor -- no breach occurred, but its high trade frequency (84 trades)
     combined with negative expectancy made it the riskiest of the three by
     a wide margin, independent of its net P/L.
 
@@ -92,9 +100,11 @@ trade. See `reports/run_001/` (superseded, pre-correction) vs.
 - 5 USD/lot commission is a real, meaningful drag relative to the 25 USD
   risk-per-idea budget (roughly 20% of a typical loss, and a comparable
   bite out of small wins) -- it disproportionately hurts higher-frequency
-  strategies (compare the Bollinger strategy's 118 trades vs. the
-  breakout's 20; EMA crossover's lower frequency, 28 trades, is part of why
-  it lost the least).
+  strategies (compare the Bollinger strategy's 84 trades vs. the
+  breakout's 20; EMA crossover's lower frequency, 25 trades, is part of why
+  it lost the least). EMA crossover also now carries a modeled swap cost
+  (-23.27 USD over 26 nights held, since it holds positions overnight) that
+  the other two strategies don't -- see `docs/AUDIT_2026-09-18.md` P1-5.
 - Choosing EMA crossover to carry forward is a reasonable, honest use of
   the only comparison available (least-bad of three), not a claim that it
   is expected to be profitable going forward.
@@ -106,32 +116,36 @@ and to hand the search off to another model/agent if this one couldn't
 produce one. Before doing either, `python/scripts/sweep_overfitting_demo.py`
 ran 81 EMA-crossover parameter combinations (fast/slow period x ATR-SL
 multiple x TP-R multiple) against the exact same fixed sample --
-**31 of 81 (38%) came out net positive**, up to +397.19 USD (+3.97%) for one
+**21 of 81 (26%) came out net positive**, up to +385.95 USD (+3.86%) for one
 specific combination (fast=30, slow=100, atr_sl=2.0, tp_r=3.0). Full grid:
-`reports/run_005_overfitting_sweep_demo/sweep_results.csv`.
+`reports/run_009_overfitting_sweep_corrected/sweep_results.csv`.
 
-**None of these 31 "positive" results are being adopted.** A 38% hit rate
-from trying arbitrary parameter combinations on a fixed ~40-trading-day
-sample is exactly what you'd expect from noise, not a discovered edge --
-with enough tries, *something* will look positive purely by chance, and
-this project has now demonstrated that concretely rather than just asserted
-it. Picking the top of this grid and calling it "the strategy" would be
-reporting an artifact as a finding, which is precisely what the original
-task spec (section 8/10) and this project's own approach throughout have
-tried not to do.
+**None of these 21 "positive" results are being adopted.** A quarter of
+arbitrary parameter combinations coming out positive on a fixed
+~40-trading-day sample is a real reason for caution -- with enough tries,
+something is likely to look positive regardless of whether there's a real
+edge underneath. That is not the same claim as "this proves the positive
+results are noise": there is no formal null model or dependency-aware
+significance test behind that 26% figure (a fair critique this project
+received and accepts -- see `docs/AUDIT_2026-09-18.md` P1-8), and the short
+sample doesn't prove the strategy family can't work either. What the sweep
+does support is: picking the top of this grid and calling it "the
+strategy" would be reporting an unvalidated, cherry-picked number as a
+finding, which is precisely what the original task spec (section 8/10) and
+this project's own approach throughout have tried not to do.
 
 This is also the honest answer to "if you can't find one yourself, hand it
 to another model": **`docs/FULL_REPORT.md`** is a complete, self-contained
 project report and handoff brief for a different AI/agent (or a human
 researcher) to continue this search properly -- full background, confirmed
 facts, data audit, risk engine, full metrics for all three strategies, this
-same sweep result as evidence of what naive continuation produces, and more
-statistically disciplined ways to actually look for a real edge (permutation
-tests against the existing results, a strategy with a rationale independent
-of this dataset, or a forward/demo-test plan to generate the new data this
-project will otherwise never have). Copy that file's contents into whatever
-other tool or model you want to try next. (`docs/HANDOFF_STRATEGY_SEARCH.md`
-is an earlier, narrower version of the same brief, kept for reference.)
+same sweep result, and more statistically disciplined ways to actually look
+for a real edge (a proper permutation/null-model test against the existing
+results, a strategy with a rationale independent of this dataset, or a
+forward/demo-test plan to generate the new data this project will
+otherwise never have). Copy that file's contents into whatever other tool
+or model you want to try next. (`docs/HANDOFF_STRATEGY_SEARCH.md` is an
+earlier, narrower version of the same brief, kept for reference.)
 
 ## What was NOT run
 
@@ -143,7 +157,11 @@ is an earlier, narrower version of the same brief, kept for reference.)
   counterparts, offered for someone with MT4 access to compile, review, and
   test against the MT4 Strategy Tester (see `docs/RISK_SPEC.md` test 10 and
   test 6/7/9's MQL4-specific halves). The Bollinger mean-reversion strategy
-  was NOT ported to MQL4 -- it was not the chosen strategy.
+  was NOT ported to MQL4 -- it was not the chosen strategy. The 2026-09-18
+  audit found and structurally fixed real bugs in this MQL4 code (a
+  persisted-state read bug that would have broken every EA restart, and an
+  unprotected-position / stop-retry gap) -- see `docs/AUDIT_2026-09-18.md`
+  P0-3/P0-4 -- but none of it has actually been compiled or run.
 - **Only one of the two MQL4 Experts may be attached to a given account at a
   time.** Both share one account-scoped risk-state file by design (single
   controller per account, spec section 5); running both simultaneously would
@@ -165,16 +183,17 @@ data/raw/GBPUSD1.csv
 docs/UNKNOWNS.md             Confirmed vs. still-unknown parameters
 docs/DATA_AUDIT.md           Independently reproduced data audit
 docs/RISK_SPEC.md            Risk formulas + mapping to the 11 mandated tests
+docs/AUDIT_2026-09-18.md     Independent code audit findings and fixes (P0 simulator bugs, MQL4 gaps)
 docs/FULL_REPORT.md          Complete, self-contained project report + handoff brief for another AI/agent
 docs/HANDOFF_STRATEGY_SEARCH.md  Earlier, narrower version of the same handoff brief (kept for reference)
 python/ftmo_sim/             Tested: time/symbol/risk/signal/execution/simulator/report modules,
                               plus strategy_ema_cross.py (chosen) and strategy_bb_reversion.py (tried, not chosen)
-python/tests/                54 passing pytest tests
+python/tests/                60 passing pytest tests
 python/scripts/run_baseline.py             Runs the London breakout baseline (reference) end to end
 python/scripts/run_ema_cross.py            Runs the CHOSEN strategy end to end
 python/scripts/run_strategy_comparison.py  Runs all three strategies side by side
 python/scripts/sweep_overfitting_demo.py   Parameter sweep demonstrating the multiple-comparisons risk (not a tuning tool)
-reports/                      See reports/README.md for what each run_NNN/ is and which is current
+reports/                      See reports/README.md for what each run_NNN/ is, which are superseded, and which are current
 mql4/Include/FTMO/            NOT_RUN: Config/TimeUtils/SymbolSpec/AccountRisk/
                                OrderExec/Persistence/Logging (shared), plus
                                Signals_EmaCross.mqh (chosen) and
@@ -191,7 +210,7 @@ cd python
 # Re-run the data audit (reproduces docs/DATA_AUDIT.md)
 python3 -m ftmo_sim.data_audit ../data/raw/EURUSD1.csv ../data/raw/GBPUSD1.csv
 
-# Run the test suite (54 tests, no dependencies beyond pytest)
+# Run the test suite (60 tests, no dependencies beyond pytest)
 pip install -r requirements-dev.txt
 python3 -m pytest -q
 
@@ -200,21 +219,21 @@ python3 scripts/run_ema_cross.py \
     --config ../config/config.example.json \
     --eurusd ../data/raw/EURUSD1.csv \
     --gbpusd ../data/raw/GBPUSD1.csv \
-    --out-dir ../reports/run_004_ema_cross_chosen
+    --out-dir ../reports/run_007_ema_cross_corrected
 
 # Run the London breakout baseline (reference only)
 python3 scripts/run_baseline.py \
     --config ../config/config.example.json \
     --eurusd ../data/raw/EURUSD1.csv \
     --gbpusd ../data/raw/GBPUSD1.csv \
-    --out-dir ../reports/run_002_confirmed_tz_commission
+    --out-dir ../reports/run_006_baseline_corrected
 
 # Run all three strategies side by side
 python3 scripts/run_strategy_comparison.py \
     --config ../config/config.example.json \
     --eurusd ../data/raw/EURUSD1.csv \
     --gbpusd ../data/raw/GBPUSD1.csv \
-    --out-dir ../reports/run_003_strategy_comparison
+    --out-dir ../reports/run_008_strategy_comparison_corrected
 ```
 
 ## Risk policy summary (see `docs/RISK_SPEC.md` for the full detail + tests)
@@ -226,11 +245,16 @@ python3 scripts/run_strategy_comparison.py \
   automatically the next correctly-reconstructed FTMO day.
 - Account-wide: every open position on the account is scanned, not just
   this EA's MagicNumber; an unknown-risk foreign position blocks new
-  entries.
+  entries. The account-wide risk-STOP closure action (not just the scan)
+  is also account-wide, not filtered by MagicNumber, as of the 2026-09-18
+  audit fix -- see `docs/AUDIT_2026-09-18.md` P0-4.
 - 25 USD risk per idea (50 USD alt scenario, both config-only, not FTMO
   rules), 100 USD max concurrent, 50 USD correlated-group cap for
   same-direction EURUSD+GBPUSD ideas. All three strategies searched above
-  run under this exact same risk engine.
+  run under this exact same risk engine; the 2026-09-18 audit found and
+  fixed a gap where the H1 simulator (EMA crossover / Bollinger reversion)
+  never actually enforced the 100/50 USD caps -- see
+  `docs/AUDIT_2026-09-18.md` P0-2.
 - No martingale, no grid, no adding to losers, no increasing risk to chase
   the monthly target or recover a loss.
 
@@ -257,9 +281,9 @@ specifies were added to any of the three.
 
 ## Open questions for the account owner
 
-1. Given the multiple-comparisons demo above (38% of arbitrary parameter
+1. Given the multiple-comparisons demo above (26% of arbitrary parameter
    combinations looked "positive" on this sample) -- do you want (a) one of
-   those 31 combinations adopted anyway, with this overfitting risk
+   those 21 combinations adopted anyway, with this overfitting risk
    explicitly accepted, (b) `docs/FULL_REPORT.md` handed to
    another model/researcher to pursue a statistically sound answer, (c) a
    demo-account forward test to start generating the new data this project
@@ -275,3 +299,8 @@ specifies were added to any of the three.
    remaining gap before this can be trusted even at the "compiles and
    behaves as designed" level -- is MT4/MetaEditor access something you can
    provide, or should the next session attempt this a different way?
+4. The 2026-09-18 audit's own instance-guard critique (`docs/AUDIT_2026-09-18.md`
+   P1-6) is only partially addressed: the account/server check cannot
+   actually distinguish a legitimate restart from a second concurrent
+   controller instance, and a fully exclusive lock was judged out of scope
+   for this round. Worth a dedicated pass before any live/demo use?

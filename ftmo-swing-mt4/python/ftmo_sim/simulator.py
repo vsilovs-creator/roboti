@@ -52,6 +52,10 @@ class SimulationResult:
     final_balance: float = 0.0
     account_number: int = 900000001
     server_name: str = "OFFLINE-SIM"
+    # Positions still open when the sample ran out -- final_balance is
+    # REALIZED balance only and does not include these; see final_equity.
+    open_positions_at_end: dict = field(default_factory=dict)
+    final_equity: float = 0.0
 
 
 def _merge_signal_feed(m5_by_symbol: dict[str, list[RichCandle]], h1_by_symbol: dict[str, list[RichCandle]], symbol: str):
@@ -185,6 +189,16 @@ def run_simulation(config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]])
                 del open_positions[s]
 
         # -- new entries from queued signals whose fill bar has arrived --
+        # FIXED 2026-09-18 (independent code audit): a position opened below
+        # at this bar's open was never checked against THIS SAME bar's own
+        # high/low -- the exit-processing block above already ran, before
+        # this position existed, so its own intrabar move was silently
+        # skipped and only caught (as a much worse "gap" exit) on the
+        # FOLLOWING bar. newly_opened tracks anything opened this timestamp
+        # so it can be checked against its own entry bar immediately below,
+        # before moving to the next timestamp.
+        newly_opened: dict[str, RichCandle] = {}
+
         while signal_ptr < len(all_signals) and all_signals[signal_ptr].retest_close_time_utc + M5 <= t:
             sig = all_signals[signal_ptr]
             signal_ptr += 1
@@ -250,7 +264,24 @@ def run_simulation(config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]])
                 sig.sl_price, sig.tp_price, fill_bar.open_time_utc, spreads[sig.symbol], actual_risk,
             )
             open_positions[sig.symbol] = pos
+            newly_opened[sig.symbol] = fill_bar
+
+        # Same-bar SL/TP check for anything just opened above.
+        for s, fill_bar in newly_opened.items():
+            pos = open_positions.get(s)
+            if pos is None:
+                continue
+            trade = simulate_exit(
+                pos, [fill_bar], config.symbols[s], config.raw["account"]["currency"],
+                spreads[s], config.commission_round_turn_usd_per_lot,
+            )
+            if trade is not None:
+                balance += trade.net_pnl_usd
+                result.closed_trades.append(trade)
+                del open_positions[s]
 
     result.final_balance = balance
     result.day_outcomes_by_symbol = {s: engines[s].day_outcomes for s in symbols}
+    result.open_positions_at_end = dict(open_positions)
+    result.final_equity = result.equity_curve[-1][1] if result.equity_curve else balance
     return result
