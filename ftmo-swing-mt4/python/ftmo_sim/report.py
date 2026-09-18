@@ -62,6 +62,7 @@ def build_report(
     full_calendar_months: set,
     commission_confirmed: bool,
     server_time_verified: bool,
+    title: str = "London Range Breakout + Retest v1",
 ) -> str:
     trades = result.closed_trades
     n = len(trades)
@@ -98,7 +99,7 @@ def build_report(
     )
 
     lines = []
-    lines.append("# EXPLORATORY baseline run -- London Range Breakout + Retest v1")
+    lines.append(f"# EXPLORATORY baseline run -- {title}")
     lines.append("")
     lines.append(
         "**Status: EXPLORATORY, not a validated FTMO result.** "

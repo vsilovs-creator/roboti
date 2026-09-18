@@ -121,15 +121,17 @@ task spec (section 8/10) and this project's own approach throughout have
 tried not to do.
 
 This is also the honest answer to "if you can't find one yourself, hand it
-to another model": **`docs/HANDOFF_STRATEGY_SEARCH.md`** is a self-contained
-brief for a different AI/agent (or a human researcher) to continue this
-search properly -- it explains what's been tried, includes the sweep result
-above as evidence of what naive continuation produces, and lays out more
+to another model": **`docs/FULL_REPORT.md`** is a complete, self-contained
+project report and handoff brief for a different AI/agent (or a human
+researcher) to continue this search properly -- full background, confirmed
+facts, data audit, risk engine, full metrics for all three strategies, this
+same sweep result as evidence of what naive continuation produces, and more
 statistically disciplined ways to actually look for a real edge (permutation
 tests against the existing results, a strategy with a rationale independent
 of this dataset, or a forward/demo-test plan to generate the new data this
 project will otherwise never have). Copy that file's contents into whatever
-other tool or model you want to try next.
+other tool or model you want to try next. (`docs/HANDOFF_STRATEGY_SEARCH.md`
+is an earlier, narrower version of the same brief, kept for reference.)
 
 ## What was NOT run
 
@@ -163,7 +165,8 @@ data/raw/GBPUSD1.csv
 docs/UNKNOWNS.md             Confirmed vs. still-unknown parameters
 docs/DATA_AUDIT.md           Independently reproduced data audit
 docs/RISK_SPEC.md            Risk formulas + mapping to the 11 mandated tests
-docs/HANDOFF_STRATEGY_SEARCH.md  Brief for a different AI/agent to continue the profit search properly
+docs/FULL_REPORT.md          Complete, self-contained project report + handoff brief for another AI/agent
+docs/HANDOFF_STRATEGY_SEARCH.md  Earlier, narrower version of the same handoff brief (kept for reference)
 python/ftmo_sim/             Tested: time/symbol/risk/signal/execution/simulator/report modules,
                               plus strategy_ema_cross.py (chosen) and strategy_bb_reversion.py (tried, not chosen)
 python/tests/                54 passing pytest tests
@@ -257,7 +260,7 @@ specifies were added to any of the three.
 1. Given the multiple-comparisons demo above (38% of arbitrary parameter
    combinations looked "positive" on this sample) -- do you want (a) one of
    those 31 combinations adopted anyway, with this overfitting risk
-   explicitly accepted, (b) `docs/HANDOFF_STRATEGY_SEARCH.md` handed to
+   explicitly accepted, (b) `docs/FULL_REPORT.md` handed to
    another model/researcher to pursue a statistically sound answer, (c) a
    demo-account forward test to start generating the new data this project
    will otherwise never have, or (d) accept EMA crossover as-is (the
