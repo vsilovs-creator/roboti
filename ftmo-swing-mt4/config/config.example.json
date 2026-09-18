@@ -110,6 +110,24 @@
       "atr_period_h1": 14,
       "atr_sl_multiple": 2.0,
       "_comment": "S6, docs/EXPERIMENT_PLAN_2026-09-18.md section 2. Parameters taken directly from the task instructions, not fitted. No fixed TP; exits on the 10-bar-extreme crossing or the ATR stop only."
+    },
+    "false_breakout_m30_v1": {
+      "range_period_m30": 20,
+      "atr_period_m30": 14,
+      "sl_atr_buffer_multiple": 0.1,
+      "timeout_m30_candles": 8,
+      "_comment": "S7, docs/EXPERIMENT_PLAN_2026-09-18.md section 2. A false-breakout-and-return hypothesis (inspired by, but not validated by, the WH SelfInvest 'Turtle Soup' forex adaptation), not fitted to this project's data."
+    },
+    "rsi2_pullback_m30_v1": {
+      "rsi_period_m30": 2,
+      "atr_period_m30": 14,
+      "atr_sl_multiple": 1.5,
+      "sma_period_m30": 5,
+      "h1_ema_period": 200,
+      "rsi_buy_threshold": 5,
+      "rsi_sell_threshold": 95,
+      "timeout_m30_candles": 10,
+      "_comment": "S8, docs/EXPERIMENT_PLAN_2026-09-18.md section 2. Adapted (unverified for forex) from the MQL5 'Day Trading Larry Connors RSI2 Mean-Reversion' article, which was tested on the US500 CFD, not forex."
     }
   }
 }
