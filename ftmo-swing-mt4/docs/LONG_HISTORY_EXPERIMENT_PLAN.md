@@ -1,17 +1,25 @@
 # Long-history (2015-2025) fixed-strategy comparison -- pre-registered plan
 
-**Status: PLAN WRITTEN, DATA_DOWNLOAD_NOT_RUN.** This document is the
-pre-registration required before any S1-S8 long-history P/L is computed
-(section 3's own rule: no result may be looked at before this plan's
-hash is fixed). Per `docs/LONG_HISTORY_REPORT.md` (read that document
-for the full evidence): no properly licensed, sufficiently-covering
-2015-2025 M1 EURUSD/GBPUSD data source could be reached from this
-session's own network environment, so **no run in section 5 or 7 below
-has actually been executed, and no S1-S8 parameter, threshold, or risk
-limit has been changed in preparation for one.** This plan is committed
-as-is so that whoever next has real network access to fetch the data
-can execute it exactly as written, without re-deciding anything under
-the influence of having already seen a result.
+**Status update (same day, continued session): data received, section
+5.A running.** This plan's hash (below) was fixed BEFORE the account
+owner supplied the real 2015-2025 M1 data (delivered directly via git
+push to `data/raw/` on `main`, since this session's own network could
+not reach any of the sources evaluated in section 2.1) and before any
+run in section 5 or 7 started -- the pre-registration discipline this
+document exists for was honored in the actual order it required, not
+retrofitted after the fact. See `docs/LONG_HISTORY_REPORT.md`'s "Real
+data received and verified" / "Part A results" sections for the
+independent quality audit and the actual run status. No S1-S8 parameter,
+threshold, or risk limit has been changed anywhere in this round.
+
+Original status note (kept for the record): **PLAN WRITTEN,
+DATA_DOWNLOAD_NOT_RUN.** No properly licensed, sufficiently-covering
+2015-2025 M1 EURUSD/GBPUSD data source could be reached from THIS
+SESSION'S OWN network environment (section 2.1's full evidence) -- this
+plan was committed as-is at that time so whoever next had real network
+or data access could execute it exactly as written, without re-deciding
+anything under the influence of having already seen a result. That is
+exactly what then happened, later the same session.
 
 Starting commit for this round: `e95743b` (the commit that closed the
 Codex R1/R2 follow-up round). No strategy parameter, risk floor, cap, or
@@ -329,13 +337,26 @@ any download attempt in section 2 was made, and before
 86fa140c3df7b45c73b0e0b233c2b44b7f6f1b392b6f43f52635a61f7f8928be
 ```
 
-Updated hash, after a real user-supplied HistData download
+Second hash, after a real user-supplied HistData download
 (`HISTDATA_COM_MT_GBPUSD_M12019.zip`) revealed that HistData's
 "MetaTrader" export platform (comma-separated, `DAT_MT_*`) also needed
 supporting alongside "Generic ASCII" -- section 2.3's format
 specification corrected to document both, per section 3's own rule that
 a data-availability correction must be dated and made BEFORE any P/L is
-computed (no run in section 5/7 has happened at either hash):
+computed (no run in section 5/7 had happened at either hash):
 ```
 8abf07875b03018b38747389610df4cc4ffb27e7a27afc08dce751bd851b3ea9
+```
+
+Third hash, after the account owner supplied the full real 2015-2025
+dataset and this document's own top status note was updated to record
+that. Section 5.A's 24-run batch was already launched in the background
+by this point (started right after the data passed its quality audit,
+before this specific status-note edit), but NO result from it had been
+read/observed by anyone when this hash was computed -- the substantive
+guarantee (no result influences the plan) holds even though the launch
+and this edit are not in the strict order the second hash's note might
+suggest; stated plainly here rather than glossed over:
+```
+a233a62d3a83d60ec62e3c249eeb10145c63343a557a2d99fca5ea170109cca9
 ```

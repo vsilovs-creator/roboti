@@ -1,12 +1,28 @@
 # Long-history (2015-2025) fixed-strategy comparison -- outcome report
 
-**Status: `DATA_DOWNLOAD_NOT_RUN`.** No S1-S8 long-history P/L number
-exists anywhere in this document or this round's commit, for any
-variant, scenario, or period. This report documents exactly what was
-tried, what the evidence showed, what code was built and tested
-instead, and the one precise command for someone with real network
-access to finish the job. See `docs/LONG_HISTORY_EXPERIMENT_PLAN.md` for
-the full pre-registered plan this round's work follows.
+**Status update (same day, continued session): `DATA_DOWNLOAD_NOT_RUN` no
+longer applies.** This session's own network environment never became
+reachable to HistData/Dukascopy/etc. (see the "Original finding" section
+below, kept intact and unedited as the historical record) -- but the
+account owner supplied the real 2015-2025 EURUSD+GBPUSD M1 data directly
+(chat upload, then a direct push of the full 22-file set to
+`data/raw/` on `main`), bypassing this session's network restriction
+entirely via a channel this session COULD already reach (git). See
+"Real data received and verified" below for the independent quality
+audit, and "Part A results" for the actual selection-period run.
+
+---
+
+## Original finding (kept for the record; superseded above for data availability, not for the source-evaluation evidence itself)
+
+No S1-S8 long-history P/L number existed anywhere in this document or
+that round's commit, for any variant, scenario, or period, AT THE TIME
+this section was written. It documents exactly what was tried, what the
+evidence showed, what code was built and tested instead of real data,
+and the one precise command for someone with real network access to
+finish the job the way this session's OWN network could not. See
+`docs/LONG_HISTORY_EXPERIMENT_PLAN.md` for the full pre-registered plan
+this round's work follows.
 
 ## What this round actually did
 
@@ -185,13 +201,72 @@ own instruction) -- keep them local or in whatever storage the next
 session has, and commit only the code, the plan, the manifests, and the
 eventual compact per-run results.
 
-## What this means for the 2000 USD/month target
+## What this means for the 2000 USD/month target (as of the original finding above)
 
-Nothing -- no data, no runs, no evidence either way. The target remains
-exactly as unconfirmed as it was before this round, for the same reason
-it was unconfirmed after the 2026-sample round: no full calendar month
-anywhere has been shown to clear it. This round adds no new information
-about it in either direction.
+Nothing -- no data, no runs, no evidence either way, AT THAT POINT. See
+below for what changed once real data arrived.
+
+---
+
+## Real data received and verified (same day, continued session)
+
+The account owner supplied the real HistData "MetaTrader"-platform M1
+download directly: first one file via chat upload
+(`HISTDATA_COM_MT_GBPUSD_M12019.zip`, which is what drove adding
+MT-platform support to `histdata_adapter.py` -- see that commit), then
+the FULL 2015-2025 set (22 files: EURUSD+GBPUSD x 11 years, `.csv` +
+HistData's own `.txt` status report per file, ~437MB) pushed directly to
+`data/raw/` on `main`. Not committed by this session -- the account
+owner's own git push, merged into this round's branch.
+
+**Independent quality audit** (`ftmo_sim.histdata_adapter.parse_histdata_m1`
+run against all 22 files, not just spot-checked):
+
+| Pair | Years | Total rows (deduped) | Duplicate timestamps | Non-monotonic | OHLC violations |
+|---|---|---|---|---|---|
+| EURUSD | 2015-2025 | 4,043,104 | 360 (all deduped, first copy kept) | 0 | 0 |
+| GBPUSD | 2015-2025 | 4,041,766 | 420 (all deduped, first copy kept) | 0 | 0 |
+
+All 22 (pair, year) combinations present, no missing files. **0 OHLC
+sanity violations and 0 non-monotonic timestamps across 8,084,870 total
+rows** -- the strongest integrity signal this project has ever had for
+any data source, including its own original 2026 sample. 2023 shows a
+visibly lower row count for both pairs (~322,500 vs ~372,000 for other
+years) -- investigated directly: every gap larger than 50 hours in
+2023's EURUSD file is an ordinary weekend (Friday close to Sunday open),
+not a missing block; 2023 simply has more numerous/larger normal
+mid-week gaps than 2022/2024 (measured: ~169,000 cumulative gap-minutes
+in 2023 vs ~150,000/~155,000 in 2022/2024) -- a genuine, if modest, data
+density difference in HistData's own feed for that year, not a parsing
+bug or a missing chunk. Documented here rather than silently accepted or
+silently "fixed."
+
+**A real bug found while building the runner, not in the data:**
+`scripts/run_experiment_2026-09-18.py`'s `write_signals_csv()` assumed
+every skipped signal exposes `signal_close_time_utc` -- true for S2-S8's
+`EmaCrossSignal` but not S1's own `SignalEvent`
+(`retest_close_time_utc`). Never crashed on the 2026 sample because S1
+had zero rejected signals there; crashed immediately on the real 8-year
+data, where it does. Fixed with a shape-agnostic accessor, 2 new
+regression tests added, and the ORIGINAL 24-run 2026-sample experiment
+re-run afterward to confirm every number is byte-identical (only the
+`git_sha` metadata field differed) -- a pure no-op for that report, a
+real fix for this one.
+
+## Part A results (continuous account, 2015-2022, 24 runs) -- IN PROGRESS
+
+`scripts/run_long_history_experiment.py` (new this round, reusing the
+2026-sample script's scenario/cost/report logic verbatim by import) is
+running the 24 continuous-account runs (S1-S8 x C1-C3, 2015-01-01 to
+2022-12-31, both symbols on one 10,000 USD account per run, per
+`docs/LONG_HISTORY_EXPERIMENT_PLAN.md` section 5.A) as this document is
+being written. Loading ~3M M1 rows/symbol/8yr takes ~90s; each run's own
+duration varies by variant. Results will be added to this section (and
+to `docs/LONG_HISTORY_EXPERIMENT_PLAN.md` section 6's qualification
+check) once complete -- no number is asserted here ahead of the actual
+run finishing. Part B (192 fixed-year-start diagnostic runs) has not
+been started; it is a separate, larger undertaking layered on the same
+verified data and code.
 
 ## Handoff note (for Codex, or whoever reviews this round next)
 
