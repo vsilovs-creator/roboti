@@ -179,6 +179,22 @@ def write_equity_csv(path: Path, result, downsample_every_n: int = 60) -> None:
                 w.writerow([t, f"{eq:.4f}", f"{bal:.4f}"])
 
 
+def _signal_close_time(signal) -> object:
+    """FIXED 2026-09-18 (found while building the long-history runner):
+    S1's SignalEvent (signals.py) names this field
+    `retest_close_time_utc`; every other variant's EmaCrossSignal
+    (strategy_ema_cross.py, used by S2-S8) names it
+    `signal_close_time_utc` -- two shapes, same meaning. This never
+    crashed on the ~2-month 2026 sample because S1 happened to have zero
+    rejected signals there (`rejected_signal_counts_by_reason: {}`), but
+    is a real AttributeError waiting to happen on any run where S1 DOES
+    reject a signal (confirmed: it does, on the 2015-2022 long-history
+    data) -- never silently skip a signal's row instead of fixing the
+    field-name mismatch."""
+    t = getattr(signal, "signal_close_time_utc", None)
+    return t if t is not None else getattr(signal, "retest_close_time_utc")
+
+
 def write_signals_csv(path: Path, result) -> None:
     """Every REJECTED signal (with its reason) and every ACCEPTED signal
     (logged at its FILL instant -- the position's entry_time_utc/price --
@@ -188,7 +204,7 @@ def write_signals_csv(path: Path, result) -> None:
         w = csv.writer(f)
         w.writerow(["status", "symbol", "direction", "time_utc", "price_or_na", "reason_or_outcome"])
         for sk in result.skipped_signals:
-            w.writerow(["REJECTED", sk.signal.symbol, sk.signal.direction, sk.signal.signal_close_time_utc, "", sk.reason])
+            w.writerow(["REJECTED", sk.signal.symbol, sk.signal.direction, _signal_close_time(sk.signal), "", sk.reason])
         for t in result.closed_trades:
             p = t.position
             w.writerow(["ACCEPTED", p.symbol, p.direction, p.entry_time_utc, f"{p.entry_price:.5f}", f"CLOSED_{t.exit_reason}"])
