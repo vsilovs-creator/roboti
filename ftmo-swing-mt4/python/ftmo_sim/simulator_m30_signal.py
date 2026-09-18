@@ -45,6 +45,7 @@ from .symbol_spec import SymbolSpec, lots_for_risk, risk_usd_for_lots
 from .time_utils import ftmo_trading_day
 
 M30 = timedelta(minutes=30)
+H1 = timedelta(hours=1)
 
 
 @dataclass
@@ -83,15 +84,63 @@ def run_m30_signal_simulation(
     engines = {s: engine_factory(s) for s in symbols}
 
     all_signals: list[EmaCrossSignal] = []
+    # (symbol, decision_time_utc, exit_flags, source_candle_open_time_utc)
+    # -- decision_time_utc is already the candle's OWN close time (M30 or
+    # H1, whichever produced the flag), so the runner's processing loop
+    # below needs no further per-entry offset; it just waits for
+    # decision_time_utc <= t. source_candle_open_time_utc is kept
+    # separately so the loop can enforce "only from the first M30 candle
+    # CLOSED AFTER entry" (excluding a check event sourced from a candle
+    # that began at-or-before the position's own entry instant).
     all_exit_checks: list[tuple] = []
     for s in symbols:
-        for candle in m30_by_symbol[s]:
-            sig = engines[s].on_m30_candle(candle)
-            if sig is not None:
-                all_signals.append(sig)
-            exit_flags = getattr(engines[s], "last_exit_flags", None)
-            if exit_flags is not None:
-                all_exit_checks.append((s, candle.open_time_utc, exit_flags))
+        # S8's secondary H1 trend filter (on_h1_candle, duck-typed --
+        # S7's engine has no such method): merge H1 and M30 candles in
+        # true time order, an H1 candle feeding the engine's filter state
+        # only once ITS OWN close time has passed, exactly mirroring
+        # simulator.py's _merge_signal_feed for the London breakout's H1
+        # EMA filter + M5 signal candles. On an exact tie (an M30 boundary
+        # that coincides with an H1 close), the H1 update is applied
+        # FIRST, so "the last H1 candle fully closed as of this M30
+        # candle's own close" already includes it.
+        if hasattr(engines[s], "on_h1_candle"):
+            h1_candles = resample(m1_by_symbol[s], 60)
+            # Both sorted by their OWN close time (not open time) -- an
+            # M30 candle's engine-processing instant is when IT closes,
+            # which is what must be compared against an H1 candle's own
+            # close time to get the merge order right. Sorting M30 by
+            # open time instead would process each M30 candle one whole
+            # M30 period too early relative to H1 closes that land
+            # exactly on an M30 boundary.
+            events = [(c.open_time_utc + H1, 0, "H1", c) for c in h1_candles]
+            events += [(c.open_time_utc + M30, 1, "M30", c) for c in m30_by_symbol[s]]
+            events.sort(key=lambda e: (e[0], e[1]))
+            for _, _, kind, candle in events:
+                if kind == "H1":
+                    engines[s].on_h1_candle(candle)
+                    # S8's third exit condition ("a CLOSED H1 candle's
+                    # close breaches EMA200 against the position") is a
+                    # pure function of H1 price/indicator state -- read on
+                    # the SAME H1 cadence as it is computed, not delayed
+                    # to the next M30 boundary.
+                    h1_exit_flags = getattr(engines[s], "last_h1_exit_flags", None)
+                    if h1_exit_flags is not None:
+                        all_exit_checks.append((s, candle.open_time_utc + H1, h1_exit_flags, candle.open_time_utc))
+                    continue
+                sig = engines[s].on_m30_candle(candle)
+                if sig is not None:
+                    all_signals.append(sig)
+                exit_flags = getattr(engines[s], "last_exit_flags", None)
+                if exit_flags is not None:
+                    all_exit_checks.append((s, candle.open_time_utc + M30, exit_flags, candle.open_time_utc))
+        else:
+            for candle in m30_by_symbol[s]:
+                sig = engines[s].on_m30_candle(candle)
+                if sig is not None:
+                    all_signals.append(sig)
+                exit_flags = getattr(engines[s], "last_exit_flags", None)
+                if exit_flags is not None:
+                    all_exit_checks.append((s, candle.open_time_utc + M30, exit_flags, candle.open_time_utc))
     all_signals.sort(key=lambda e: e.signal_close_time_utc)
     all_exit_checks.sort(key=lambda e: e[1])
 
@@ -223,11 +272,17 @@ def run_m30_signal_simulation(
         # a "prior-candle signal exit", same mechanism as S6's Donchian
         # exit in simulator_ema_cross.py. S7's engine never sets
         # last_exit_flags, so this loop is a no-op for S7.
-        while exit_check_ptr < len(all_exit_checks) and all_exit_checks[exit_check_ptr][1] + M30 <= t:
-            exit_symbol, exit_close_time, exit_flags = all_exit_checks[exit_check_ptr]
+        while exit_check_ptr < len(all_exit_checks) and all_exit_checks[exit_check_ptr][1] <= t:
+            exit_symbol, exit_decision_time, exit_flags, source_candle_open_time = all_exit_checks[exit_check_ptr]
             exit_check_ptr += 1
             pos = open_positions.get(exit_symbol)
             if pos is None:
+                continue
+            if source_candle_open_time <= pos.entry_time_utc:
+                # "Starting with the first M30 candle CLOSED AFTER entry"
+                # -- a check sourced from the entry candle itself (or
+                # anything at/before it) never counts, matching the
+                # timeout exit's identical exclusion above.
                 continue
             should_close = (
                 (pos.direction == "BUY" and exit_flags.close_long)
@@ -235,7 +290,7 @@ def run_m30_signal_simulation(
             )
             if not should_close:
                 continue
-            fill_idx = first_bar_at_or_after(exit_symbol, exit_close_time + M30)
+            fill_idx = first_bar_at_or_after(exit_symbol, exit_decision_time)
             if fill_idx is None or m1_index[exit_symbol][fill_idx].open_time_utc != t:
                 continue
             fill_bar = m1_index[exit_symbol][fill_idx]
@@ -386,6 +441,29 @@ def run_false_breakout_m30_simulation(config: RunConfig, m1_by_symbol: dict[str,
         range_period=p["range_period_m30"],
         atr_period=p["atr_period_m30"],
         sl_atr_buffer_multiple=p["sl_atr_buffer_multiple"],
+    )
+    return run_m30_signal_simulation(
+        config, m1_by_symbol, engine_factory=engine_factory,
+        timeout_m30_candles=p["timeout_m30_candles"], slippage_price=slippage_price,
+    )
+
+
+def run_rsi2_pullback_m30_simulation(config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]],
+                                      slippage_price: float = 0.0) -> M30SimulationResult:
+    """S8 -- see docs/EXPERIMENT_PLAN_2026-09-18.md section 2. Reads
+    config.raw['strategies']['rsi2_pullback_m30_v1']."""
+    from .strategy_rsi2_pullback_m30 import Rsi2PullbackM30Engine
+
+    p = config.raw["strategies"]["rsi2_pullback_m30_v1"]
+    engine_factory = lambda symbol: Rsi2PullbackM30Engine(
+        symbol,
+        rsi_period=p["rsi_period_m30"],
+        atr_period=p["atr_period_m30"],
+        atr_sl_multiple=p["atr_sl_multiple"],
+        sma_period=p["sma_period_m30"],
+        h1_ema_period=p["h1_ema_period"],
+        rsi_buy_threshold=p["rsi_buy_threshold"],
+        rsi_sell_threshold=p["rsi_sell_threshold"],
     )
     return run_m30_signal_simulation(
         config, m1_by_symbol, engine_factory=engine_factory,

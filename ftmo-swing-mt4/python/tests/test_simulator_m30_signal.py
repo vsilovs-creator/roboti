@@ -95,6 +95,56 @@ def test_timeout_exit_fires_after_8_full_candles_excluding_entry_candle():
     assert trade.exit_price == pytest.approx(1.10020 + cfg.symbols["EURUSD"].point_size * 10)
 
 
+class _RecorderEngine:
+    """Records the exact order on_h1_candle()/on_m30_candle() are called
+    in -- used to pin down the H1/M30 merge timing S8 depends on (an H1
+    candle's close must be fed to the engine no later than an M30 candle
+    that closes at or after it, and strictly before one that closes
+    before it)."""
+
+    def __init__(self, symbol):
+        self.symbol = symbol
+        self.calls = []
+
+    def on_h1_candle(self, candle):
+        self.calls.append(("H1_CLOSE", candle.open_time_utc + timedelta(hours=1)))
+
+    def on_m30_candle(self, candle):
+        self.calls.append(("M30_CLOSE", candle.open_time_utc + timedelta(minutes=30)))
+        return None
+
+
+def test_h1_and_m30_are_merged_by_their_own_close_time_not_m30_open_time():
+    """Regression: an earlier version of the merge sorted M30 candles by
+    OPEN time instead of close time, which fed each M30 candle to the
+    engine one whole M30 period too early relative to an H1 close landing
+    on that exact M30 boundary -- e.g. bucket1 (closing at t=60, the SAME
+    instant H1 candle0 also closes) would have been processed at t=30,
+    before H1 candle0's close was known, instead of after it as required."""
+    cfg = load_config(CONFIG_PATH)
+    recorder = _RecorderEngine("EURUSD")
+    engine_factory = lambda s: recorder if s == "EURUSD" else FalseBreakoutM30Engine(s, range_period=999, atr_period=1)
+
+    m1 = {
+        "EURUSD": _flat_m30_buckets(1.10000, start=0, count=4),  # 2 full H1 candles (buckets 0-1, 2-3)
+        "GBPUSD": _flat_m30_buckets(1.30000, start=0, count=4),
+    }
+    run_m30_signal_simulation(cfg, m1, engine_factory=engine_factory, timeout_m30_candles=8)
+
+    kinds_and_times = recorder.calls
+    # Every event's own close time, in the order they were fed to the engine.
+    times_in_call_order = [t for _, t in kinds_and_times]
+    assert times_in_call_order == sorted(times_in_call_order)
+    # The H1 close at t=60 must appear on or before the M30 close for
+    # bucket1 (also t=60) -- and strictly before bucket2's close (t=90).
+    h1_close_60 = BASE + timedelta(minutes=60)
+    idx_h1 = kinds_and_times.index(("H1_CLOSE", h1_close_60))
+    idx_bucket1_m30 = kinds_and_times.index(("M30_CLOSE", h1_close_60))
+    idx_bucket2_m30 = kinds_and_times.index(("M30_CLOSE", BASE + timedelta(minutes=90)))
+    assert idx_h1 < idx_bucket2_m30
+    assert idx_h1 <= idx_bucket1_m30  # tie -- H1 processed first, per convention
+
+
 def test_tp_not_on_profit_side_of_fill_is_skipped_not_sent_inverted():
     """A large adverse slippage on entry can push the fill past the fixed
     TP -- the entry must be skipped, never sent with an inverted or
