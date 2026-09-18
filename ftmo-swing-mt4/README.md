@@ -24,8 +24,8 @@ runner (`python/scripts/run_ema_cross.py`), and has been ported to MQL4
 **This is "least-bad of three on one short sample," not "validated" or
 "expected profitable."** It still lost money on the only data that exists,
 and with no more data coming, that result can never be re-checked
-out-of-sample. See "Interpretation" below before treating this as more than
-it is.
+out-of-sample. See "Interpretation" and "Multiple-comparisons demo" below
+before treating this as more than it is.
 
 ## Confirmed facts (account owner, 2026-09-18)
 
@@ -95,13 +95,41 @@ trade. See `reports/run_001/` (superseded, pre-correction) vs.
   strategies (compare the Bollinger strategy's 118 trades vs. the
   breakout's 20; EMA crossover's lower frequency, 28 trades, is part of why
   it lost the least).
-- No attempt was made to re-tune any of the three strategies' parameters to
-  make this specific window profitable, and none will be made now that no
-  further data exists to validate against -- doing so would only produce an
-  overfit number, not a finding.
 - Choosing EMA crossover to carry forward is a reasonable, honest use of
   the only comparison available (least-bad of three), not a claim that it
   is expected to be profitable going forward.
+
+## Multiple-comparisons demo -- why "search harder for a positive one" doesn't work here
+
+The account owner separately asked for a strategy that comes out positive,
+and to hand the search off to another model/agent if this one couldn't
+produce one. Before doing either, `python/scripts/sweep_overfitting_demo.py`
+ran 81 EMA-crossover parameter combinations (fast/slow period x ATR-SL
+multiple x TP-R multiple) against the exact same fixed sample --
+**31 of 81 (38%) came out net positive**, up to +397.19 USD (+3.97%) for one
+specific combination (fast=30, slow=100, atr_sl=2.0, tp_r=3.0). Full grid:
+`reports/run_005_overfitting_sweep_demo/sweep_results.csv`.
+
+**None of these 31 "positive" results are being adopted.** A 38% hit rate
+from trying arbitrary parameter combinations on a fixed ~40-trading-day
+sample is exactly what you'd expect from noise, not a discovered edge --
+with enough tries, *something* will look positive purely by chance, and
+this project has now demonstrated that concretely rather than just asserted
+it. Picking the top of this grid and calling it "the strategy" would be
+reporting an artifact as a finding, which is precisely what the original
+task spec (section 8/10) and this project's own approach throughout have
+tried not to do.
+
+This is also the honest answer to "if you can't find one yourself, hand it
+to another model": **`docs/HANDOFF_STRATEGY_SEARCH.md`** is a self-contained
+brief for a different AI/agent (or a human researcher) to continue this
+search properly -- it explains what's been tried, includes the sweep result
+above as evidence of what naive continuation produces, and lays out more
+statistically disciplined ways to actually look for a real edge (permutation
+tests against the existing results, a strategy with a rationale independent
+of this dataset, or a forward/demo-test plan to generate the new data this
+project will otherwise never have). Copy that file's contents into whatever
+other tool or model you want to try next.
 
 ## What was NOT run
 
@@ -135,12 +163,14 @@ data/raw/GBPUSD1.csv
 docs/UNKNOWNS.md             Confirmed vs. still-unknown parameters
 docs/DATA_AUDIT.md           Independently reproduced data audit
 docs/RISK_SPEC.md            Risk formulas + mapping to the 11 mandated tests
+docs/HANDOFF_STRATEGY_SEARCH.md  Brief for a different AI/agent to continue the profit search properly
 python/ftmo_sim/             Tested: time/symbol/risk/signal/execution/simulator/report modules,
                               plus strategy_ema_cross.py (chosen) and strategy_bb_reversion.py (tried, not chosen)
 python/tests/                54 passing pytest tests
 python/scripts/run_baseline.py             Runs the London breakout baseline (reference) end to end
 python/scripts/run_ema_cross.py            Runs the CHOSEN strategy end to end
 python/scripts/run_strategy_comparison.py  Runs all three strategies side by side
+python/scripts/sweep_overfitting_demo.py   Parameter sweep demonstrating the multiple-comparisons risk (not a tuning tool)
 reports/                      See reports/README.md for what each run_NNN/ is and which is current
 mql4/Include/FTMO/            NOT_RUN: Config/TimeUtils/SymbolSpec/AccountRisk/
                                OrderExec/Persistence/Logging (shared), plus
@@ -224,12 +254,14 @@ specifies were added to any of the three.
 
 ## Open questions for the account owner
 
-1. Now that EMA crossover is the chosen path and no more data will confirm
-   or refute it out-of-sample: is the next step (a) proceed toward a
-   demo-account forward test to gather live evidence, since historical data
-   is exhausted, or (b) something else entirely (a different market/
-   timeframe, a non-technical filter, manual parameter adjustment based on
-   trading experience rather than more backtesting)?
+1. Given the multiple-comparisons demo above (38% of arbitrary parameter
+   combinations looked "positive" on this sample) -- do you want (a) one of
+   those 31 combinations adopted anyway, with this overfitting risk
+   explicitly accepted, (b) `docs/HANDOFF_STRATEGY_SEARCH.md` handed to
+   another model/researcher to pursue a statistically sound answer, (c) a
+   demo-account forward test to start generating the new data this project
+   will otherwise never have, or (d) accept EMA crossover as-is (the
+   current default) and move on?
 2. Should `FTMO_Swing_EA.mq4` (London breakout) be removed from the repo
    now that it is not the chosen path, or kept as reference/history? It is
    currently kept but clearly marked as reference-only in this README and

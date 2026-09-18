@@ -20,3 +20,11 @@ All EXPLORATORY -- see `../docs/UNKNOWNS.md` and `../docs/RISK_SPEC.md`.
   in run_003 after the account owner confirmed no further historical data
   will be supplied. -257.98 USD (-2.58%), 28 trades. Still a loss, not a
   validated result -- see `../README.md`.
+- **run_005_overfitting_sweep_demo/** -- NOT a strategy candidate. An 81-
+  combination EMA-crossover parameter sweep on this same fixed sample,
+  38% of which (31/81) came out net positive (up to +397 USD) purely from
+  trying enough parameter combinations. Run deliberately to make the
+  multiple-comparisons/overfitting risk concrete rather than assert it --
+  see `../docs/HANDOFF_STRATEGY_SEARCH.md` for why none of these 31 "wins"
+  are being adopted, and what a more rigorous continuation of the search
+  for a positive strategy would need to look like.
