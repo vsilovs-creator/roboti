@@ -146,11 +146,28 @@ All amounts USD, `B0` = balance at 00:00 Europe/Prague ("FTMO day"):
   `docs/STRATEGY_RESEARCH_2026-09-18.md`. No strategy parameter or risk
   limit was changed in this round; only the simulator/accounting
   infrastructure was fixed.
-- 104 pytest tests cover this (`python/tests/`), including the originally
-  mandated risk/execution scenarios plus new regressions for all seven
-  bugs above (the two prior-round ones and the five Codex findings), the
-  commission-in-budget fix, adverse slippage's direction convention, and
-  every new strategy engine's edge cases.
+- **Two more bugs found by a follow-up Codex review of that third
+  round's OWN fix, and fixed in a fourth round** (see
+  `docs/AUDIT_2026-09-18.md`'s newest "round two" section): (a) the
+  previous round's event-order fix deferred a pre-existing position's
+  gap-through-SL/TP check (knowable immediately at a bar's open) into
+  the SAME deferred pass as the pure intrabar (high/low) check, so a
+  same-tick discretionary/timeout exit could fire first and mask the
+  gap with the wrong reason and price; (b) after entry-side commission
+  booking, the monthly P/L table still didn't reconcile with the
+  account's actual balance change across a month boundary. Both
+  independently reproduced with Codex's own minimal scripts, confirmed
+  failing, then fixed with regression tests. Recomputing all 24 runs
+  with these two fixes changed **no headline number** (R1's ordering
+  bug never actually triggered on this real sample; R2 only adds a new,
+  correctly-reconciling field alongside the existing one) -- but both
+  were real, independently confirmed bugs worth fixing regardless.
+- 106 pytest tests cover this (`python/tests/`), including the originally
+  mandated risk/execution scenarios plus new regressions for all nine
+  bugs above (two from the second round, five Codex findings, two from
+  Codex's follow-up review of that fix), the commission-in-budget fix,
+  adverse slippage's direction convention, and every new strategy
+  engine's edge cases.
 
 ## 5. Eight strategy variants x three cost scenarios (the main new work)
 

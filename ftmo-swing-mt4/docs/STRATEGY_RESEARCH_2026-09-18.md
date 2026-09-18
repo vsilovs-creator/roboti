@@ -438,13 +438,20 @@ negative.
 
 What actually moved, and why:
 
-- **Every C1 net-USD figure is unchanged to the cent** (deltas of -0.00 to
-  -0.38 are trade-count/rounding noise from F2's event-order fix touching
-  a handful of same-tick edge cases, not a scenario-config error) --
-  expected, since F1's bug only affected C2/C3 (C1's spread was already
-  correct before the fix) and F2/F3/F4/F5 are accounting/measurement
-  fixes that don't change which trades fire on this sample at C1, except
-  where noted for S3 below.
+- **Corrected wording (an independent Codex review of this response
+  caught the original phrasing contradicting its own table -- see
+  `docs/CODEX_RESPONSE_2026-09-18.md`'s R3 section): every C1 net-USD
+  figure is unchanged OR changed by only a few cents** -- S1/S2/S4/S5/S7
+  are exactly unchanged (delta -0.00); S3/S6/S8 shift by -5.07/-0.15/
+  -0.38 USD. These small non-zero C1 deltas are real, not rounding noise:
+  F2's event-order fix (deferring intrabar SL/TP resolution to strictly
+  after entries, and using open-based marks for pre-entry decisions)
+  changed a handful of same-tick edge cases even at C1, most visibly for
+  S3 (102 -> 147 trades, -5.07 USD) -- see the S3-specific note below.
+  This is expected: F1's bug only affected C2/C3 (C1's spread was already
+  correct before the fix), but F2/F3/F4/F5 are accounting/event-order
+  fixes that CAN change which trades fire even at C1, and for S3 they
+  did.
 - **Every C2/C3 figure changed, almost always for the worse (larger
   loss)**, because F1's fix means C2/C3 now actually apply their intended
   2x/3x spread instead of silently reusing C1's spread -- this is the

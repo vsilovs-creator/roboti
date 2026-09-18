@@ -171,9 +171,23 @@ def monthly_realized_vs_floating(
     3. Includes every month between the sample's first and last observed
        point, even ones with zero trades and zero swap (a fully idle
        month, or every month after a working stop that closed everything).
-    Never marks a partial month as full; never annualizes. Realized here
-    includes both trade P/L and swap; the two are also reported
-    separately for anyone who wants only one."""
+    Never marks a partial month as full; never annualizes.
+
+    FIXED 2026-09-18 (Codex R2, follow-up-follow-up-follow-up audit):
+    after the F5 fix (entry-side commission booked to balance immediately
+    at open, not deferred to close), `realized_usd` (trade P/L by exit
+    month, plus swap) is no longer the same thing as the account's actual
+    balance change for that month -- a position that OPENS in one month
+    and closes (or is still open) in a LATER month causes a real balance
+    change (its entry commission) in the month it OPENED that this
+    exit-month-keyed sum never captures. `balance_change_usd`, derived
+    directly from the equity_curve's own balance component at each
+    month's boundary, is the AUTHORITATIVE, always-reconciling figure
+    (its sum across every month equals exactly `final_balance -
+    initial_balance`); `realized_usd`/`realized_trade_usd`/
+    `realized_swap_usd` remain a separate, informational closed-trades-by-
+    exit-month breakdown -- the two are NOT the same indicator and must
+    never be presented as interchangeable (Codex's own framing)."""
     if not result.equity_curve:
         return []
 
@@ -199,27 +213,48 @@ def monthly_realized_vs_floating(
     last_day = ftmo_trading_day(result.equity_curve[-1][0])
 
     out = []
-    month_start_equity = initial_balance
+    balance_start_of_month = initial_balance
     prev_floating = 0.0  # nothing was open before the sample started
     for (y, m) in _months_between(first_day, last_day):
         trade_realized = by_month_trade_realized.get((y, m), 0.0)
         swap_realized = by_month_swap.get((y, m), 0.0)
         realized = trade_realized + swap_realized
         point = last_point_by_month.get((y, m))
-        floating_at_month_end = (point[0] - point[1]) if point is not None else prev_floating
-        month_end_equity = point[0] if point is not None else (month_start_equity + realized)
+        if point is not None:
+            month_end_equity, balance_end_of_month = point
+        else:
+            # No M1 timestamp fell in this month at all (should not
+            # happen on continuous real data -- every month in
+            # _months_between comes from an observed equity-curve
+            # range -- but keep this robust for a sparse/synthetic
+            # test curve): carry balance/floating forward unchanged
+            # rather than fabricate a point.
+            balance_end_of_month = balance_start_of_month
+            month_end_equity = balance_end_of_month + prev_floating
+        floating_at_month_start = prev_floating
+        floating_at_month_end = month_end_equity - balance_end_of_month
+        balance_change = balance_end_of_month - balance_start_of_month
+        equity_change = balance_change + floating_at_month_end - floating_at_month_start
+        month_start_equity = balance_start_of_month + floating_at_month_start
         out.append({
             "year": y, "month": m,
             "is_full_calendar_month": (y, m) in full_calendar_months,
+            # Authoritative: sums exactly to final_balance - initial_balance.
+            "balance_change_usd": balance_change,
+            # Informational: closed-trades-by-exit-month view, NOT the
+            # same indicator as balance_change_usd (Codex R2) -- see the
+            # docstring above.
             "realized_usd": realized,
             "realized_trade_usd": trade_realized,
             "realized_swap_usd": swap_realized,
+            "floating_at_month_start_usd": floating_at_month_start,
             "floating_at_month_end_usd": floating_at_month_end,
+            "equity_change_usd": equity_change,
             "trade_count": by_month_trades.get((y, m), 0),
             "realized_pct_of_initial_balance": 100.0 * realized / initial_balance,
             "realized_pct_of_month_start_equity": (100.0 * realized / month_start_equity) if month_start_equity else float("nan"),
         })
-        month_start_equity = month_end_equity
+        balance_start_of_month = balance_end_of_month
         prev_floating = floating_at_month_end
     return out
 
@@ -244,6 +279,13 @@ def full_metrics(
     avg_win_usd = (gross_win / len(wins)) if wins else float("nan")
     avg_loss_usd = (-gross_loss / len(losses)) if losses else float("nan")
     expectancy_usd = (sum(t.net_pnl_usd for t in trades) / n) if n else float("nan")
+    # NOTE (Codex R3/F4 secondary observation, not itself a bug): "R" here
+    # is each trade's OWN actual rounded-lot risk at entry
+    # (`position.risk_usd_at_entry`, computed in `_finalize()`), NOT the
+    # fixed 25 USD requested risk every idea is sized FROM -- the two
+    # differ slightly once lot rounding is applied. "expectancy_r_per_trade"
+    # below means "expectancy per trade's own actual risk," never
+    # "expectancy per 25 USD requested" -- readers must not conflate them.
     r_values = [t.r_multiple_net for t in trades if t.r_multiple_net is not None]
     expectancy_r = (sum(r_values) / len(r_values)) if r_values else float("nan")
 
@@ -321,6 +363,19 @@ def full_metrics(
         # which a report must prefer.
         "working_floor_breach_count": len(risk_stop_breaches),
         "independently_recomputed_floor_breach_days": independently_recomputed_breach_count,
+        # ADDED 2026-09-18 (Codex R3, follow-up-follow-up-follow-up audit):
+        # daily_floor_analysis/worst_ftmo_day/independently_recomputed_floor_breach_days
+        # are all derived from the same per-M1-minute, CLOSE-marked equity
+        # series (`_floating_pnl(use_close=True)` at each simulator
+        # timestep) -- a genuine minute-by-minute observation, but NOT a
+        # sub-minute intrabar tick path (which this M1-only dataset cannot
+        # provide; SL/TP intrabar TOUCHES are separately resolved from
+        # each bar's own high/low by order_exec._check_bar, independent of
+        # this equity series). "0 breaches" above must never be read as
+        # "verified against every possible intrabar path" -- only as
+        # "no M1-close-minute observation crossed the floor."
+        "floor_breach_detection_basis": "m1_close_minute_equity_vs_own_b0",
+        "intrabar_stress_evaluated": False,
         "same_bar_sl_tp_ambiguous_count": ambiguous,
         "gap_fill_count": gap_fills,
         "avg_holding_time_hours": avg_holding_hours,

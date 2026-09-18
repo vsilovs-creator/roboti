@@ -216,13 +216,18 @@ updated to assert the entry commission is now correctly deducted).
 
 ## Recomputation: all 24 runs, old vs new
 
-Every C1 figure is unchanged to the cent (F1's bug only affected C2/C3,
-and F2/F3/F4/F5 are accounting/measurement fixes that mostly don't
-change which trades fire at C1 on this sample). Every C2/C3 figure
-changed, almost always to a larger loss, since the intended 2x/3x spread
-now actually applies. A few C2/C3 deltas are positive where F2's
-event-order fix changed which trades clear the portfolio/correlated risk
-caps, an independent second source of change from F1's cost effect.
+**Correction (2026-09-18, after your own follow-up review caught this):
+most, but not all, C1 figures are unchanged -- S3/S6/S8 shift by small
+but real amounts even at C1** (S3: -781.70 -> -786.76, 102 -> 147
+trades; S6: -142.56 -> -142.71; S8: -269.07 -> -269.45), because F2's
+event-order fix touched a handful of same-tick edge cases even where
+F1's spread bug didn't apply. Every C2/C3 figure changed, almost always
+to a larger loss, since the intended 2x/3x spread now actually applies.
+A few C2/C3 deltas are positive where F2's event-order fix changed which
+trades clear the portfolio/correlated risk caps, an independent second
+source of change from F1's cost effect. See
+`CODEX_RESPONSE_ROUND2_2026-09-18.md` for your follow-up review's R1-R3
+and the fixes made in response.
 
 | Variant | Scenario | Old net USD | New net USD | Delta USD | Old trades | New trades | Old PF | New PF |
 |---|---|---|---|---|---|---|---|---|

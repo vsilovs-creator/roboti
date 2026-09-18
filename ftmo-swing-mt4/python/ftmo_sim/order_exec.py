@@ -126,15 +126,54 @@ def _check_bar(position: Position, bar: RichCandle, spread: float,
 
     `position.tp is None` (S6 Donchian -- no fixed TP) simply disables every
     TP check below; never a fabricated huge/sentinel TP price."""
+    gap = _check_gap_only(position, bar, spread, slippage_price)
+    if gap is not None:
+        return gap
+    return _check_intrabar_only(position, bar, spread, slippage_price)
+
+
+def _check_gap_only(position: Position, bar: RichCandle, spread: float,
+                     slippage_price: float = 0.0) -> tuple[str, float, bool, bool] | None:
+    """The gap-only half of `_check_bar`: whether THIS BAR'S OPEN already
+    lies beyond the position's SL/TP -- a mechanical stop/limit-order fill,
+    knowable immediately at the open (FIXED 2026-09-18, Codex R1,
+    follow-up-follow-up-follow-up audit: this must be resolved before any
+    discretionary/timeout exit or new entry decided at this same instant,
+    never masked by one of those firing first because it happened to be
+    checked earlier in the same tick). Never inspects bar.high/low --
+    that is `_check_intrabar_only`'s job, and requires the whole bar to
+    have elapsed."""
     has_tp = position.tp is not None
     if position.direction == "BUY":
-        bid_open, bid_high, bid_low = bar.open, bar.high, bar.low
+        bid_open = bar.open
         gapped_past_sl = bid_open <= position.sl
         gapped_past_tp = has_tp and bid_open >= position.tp
         if gapped_past_sl:
             return ("SL", bid_open - slippage_price, gapped_past_tp, True)
         if gapped_past_tp:
             return ("TP", bid_open, False, True)
+        return None
+    else:
+        ask_open = bar.open + spread
+        gapped_past_sl = ask_open >= position.sl
+        gapped_past_tp = has_tp and ask_open <= position.tp
+        if gapped_past_sl:
+            return ("SL", ask_open + slippage_price, gapped_past_tp, True)
+        if gapped_past_tp:
+            return ("TP", ask_open, False, True)
+        return None
+
+
+def _check_intrabar_only(position: Position, bar: RichCandle, spread: float,
+                          slippage_price: float = 0.0) -> tuple[str, float, bool, bool] | None:
+    """The intrabar (high/low) half of `_check_bar`: assumes the gap case
+    (`_check_gap_only`) has already been ruled out for this bar. Requires
+    the whole bar to have conceptually elapsed -- callers must never call
+    this before a tick's own entries/discretionary exits have been
+    decided (Codex F2's causality principle)."""
+    has_tp = position.tp is not None
+    if position.direction == "BUY":
+        bid_high, bid_low = bar.high, bar.low
         sl_hit = bid_low <= position.sl
         tp_hit = has_tp and bid_high >= position.tp
         if sl_hit and tp_hit:
@@ -145,15 +184,8 @@ def _check_bar(position: Position, bar: RichCandle, spread: float,
             return ("TP", position.tp, False, False)
         return None
     else:
-        ask_open = bar.open + spread
         ask_high = bar.high + spread
         ask_low = bar.low + spread
-        gapped_past_sl = ask_open >= position.sl
-        gapped_past_tp = has_tp and ask_open <= position.tp
-        if gapped_past_sl:
-            return ("SL", ask_open + slippage_price, gapped_past_tp, True)
-        if gapped_past_tp:
-            return ("TP", ask_open, False, True)
         sl_hit = ask_high >= position.sl
         tp_hit = has_tp and ask_low <= position.tp
         if sl_hit and tp_hit:
@@ -198,6 +230,40 @@ def simulate_exit(
             final_reason = f"{reason}_GAP" if gapped else reason
             return _finalize(position, exit_price, bar.open_time_utc, final_reason, ambiguous, per_unit_per_lot, commission_round_turn_usd_per_lot)
     return None
+
+
+def resolve_gap_fill(
+    position: Position,
+    bar: RichCandle,
+    spec: SymbolSpec,
+    account_currency: str,
+    spread: float,
+    commission_round_turn_usd_per_lot: float | None,
+    slippage_price: float = 0.0,
+) -> ClosedTrade | None:
+    """ADDED 2026-09-18 (Codex R1, follow-up-follow-up-follow-up audit):
+    a mechanical stop/limit-order fill for a position that was ALREADY
+    open before this bar, whose SL/TP this bar's OWN OPEN has already
+    jumped past -- knowable immediately at the open, before any
+    discretionary/timeout exit or new entry decided at this same instant.
+    Callers must run this FIRST in a tick's processing (before the
+    risk-stop check, discretionary/timeout exits, and new entries), so a
+    gapped SL/TP is never masked by one of those firing first just because
+    it happened to be checked earlier in the tick's code. Returns None if
+    this bar's open has not gapped past the level -- callers must still
+    run `simulate_exit` separately, strictly AFTER this tick's new
+    entries, to catch a pure intrabar (non-gap) SL/TP touch, per Codex
+    F2's causality principle (that check needs the whole bar to have
+    conceptually elapsed, which a gap-at-open does not)."""
+    gap = _check_gap_only(position, bar, spread, slippage_price)
+    if gap is None:
+        return None
+    reason, exit_price, ambiguous, _gapped = gap
+    per_unit_per_lot = value_per_price_unit_per_lot(spec, account_currency)
+    return _finalize(
+        position, exit_price, bar.open_time_utc, f"{reason}_GAP", ambiguous,
+        per_unit_per_lot, commission_round_turn_usd_per_lot,
+    )
 
 
 def force_close(

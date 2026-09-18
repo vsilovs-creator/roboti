@@ -26,7 +26,7 @@ from .account_risk import (
 )
 from .bars import RichCandle, resample
 from .config import RunConfig
-from .order_exec import ClosedTrade, Position, force_close, open_position, simulate_exit, spread_price
+from .order_exec import ClosedTrade, Position, force_close, open_position, resolve_gap_fill, simulate_exit, spread_price
 from .risk_state import RiskState
 from .signals import LondonBreakoutRetestEngine, SignalEvent
 from .symbol_spec import lots_for_risk, risk_usd_for_lots
@@ -160,9 +160,26 @@ def run_simulation(
         # THIS bar's intrabar high/low/close before this bar's entries were
         # decided -- letting risk freed by a same-bar-LATER exit be used by
         # an entry decided at the bar's OPEN, before that risk had actually
-        # been freed. Deferred to a unified pass after entries (below),
-        # covering pre-existing survivors and this tick's own new entries
-        # alike against the same bar in one pass.
+        # been freed. The PURE INTRABAR (high/low) part of that check is
+        # deferred to a unified pass after entries (below). A GAP-through
+        # of an already-open position's SL/TP is knowable IMMEDIATELY at
+        # this bar's open -- a mechanical stop/limit-order fill, not a
+        # decision -- so it is resolved right here, before the risk-stop
+        # check and this tick's entries (FIXED 2026-09-18, Codex R1,
+        # follow-up-follow-up-follow-up audit; see the matching comment in
+        # simulator_ema_cross.py for the exact repro this guards against).
+        for s in list(open_positions.keys()):
+            bar = bar_by_symbol_by_time[s].get(t)
+            if bar is None:
+                continue
+            trade = resolve_gap_fill(
+                open_positions[s], bar, config.symbols[s], config.raw["account"]["currency"],
+                spreads[s], config.commission_round_turn_usd_per_lot, slippage_price=slippage_price,
+            )
+            if trade is not None:
+                balance += trade.net_pnl_usd + trade.position.entry_commission_usd
+                result.closed_trades.append(trade)
+                del open_positions[s]
 
         # -- mark-to-market equity + risk stop evaluation --
         def _mark_price(symbol: str, direction: str, use_close: bool) -> float | None:

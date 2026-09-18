@@ -24,7 +24,7 @@ from typing import Callable
 from .account_risk import OpenPositionRiskView, new_entry_allowed, new_idea_within_risk_caps
 from .bars import RichCandle, resample
 from .config import RunConfig
-from .order_exec import ClosedTrade, Position, force_close, open_position, simulate_exit, spread_price
+from .order_exec import ClosedTrade, Position, force_close, open_position, resolve_gap_fill, simulate_exit, spread_price
 from .risk_state import RiskState
 from .strategy_ema_cross import EmaCrossEngine, EmaCrossSignal
 from .symbol_spec import SymbolSpec, lots_for_risk, risk_usd_for_lots
@@ -185,11 +185,30 @@ def run_h1_signal_simulation(
         # this bar's OPEN. Freeing an existing position's risk via that
         # same-bar-later exit BEFORE this bar's entries are decided let a
         # new entry use capital that, at the instant of the entry (the
-        # bar's open), had not actually been freed yet. This block is now
-        # deferred to AFTER entries (see the unified pass near the bottom
-        # of this loop, which checks every position -- pre-existing
-        # survivors and this tick's own new entries alike -- against this
-        # SAME bar in one pass).
+        # bar's open), had not actually been freed yet. The PURE INTRABAR
+        # (high/low) part of that check is deferred to AFTER entries (see
+        # the unified pass near the bottom of this loop). A GAP-through of
+        # an already-open position's SL/TP, however, is knowable
+        # IMMEDIATELY at this bar's open -- a mechanical stop/limit-order
+        # fill, not a decision -- so it is resolved right here, BEFORE the
+        # risk-stop check, the discretionary-exit check, and this tick's
+        # entries below (FIXED 2026-09-18, Codex R1, follow-up-follow-up-
+        # follow-up audit: it must never be masked by one of those firing
+        # first just because it happened to be checked earlier in the
+        # tick's code -- see the exact repro in
+        # docs/AUDIT_2026-09-18.md's newest section).
+        for s in list(open_positions.keys()):
+            bar = bar_by_symbol_by_time[s].get(t)
+            if bar is None:
+                continue
+            trade = resolve_gap_fill(
+                open_positions[s], bar, config.symbols[s], config.raw["account"]["currency"],
+                spreads[s], config.commission_round_turn_usd_per_lot, slippage_price=slippage_price,
+            )
+            if trade is not None:
+                balance += trade.net_pnl_usd + trade.position.entry_commission_usd
+                result.closed_trades.append(trade)
+                del open_positions[s]
 
         def _mark_price(symbol: str, direction: str, use_close: bool) -> float | None:
             bar = last_seen.get(symbol)

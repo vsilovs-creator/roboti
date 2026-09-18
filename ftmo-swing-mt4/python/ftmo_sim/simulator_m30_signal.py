@@ -37,7 +37,7 @@ from typing import Callable
 from .account_risk import OpenPositionRiskView, new_entry_allowed, new_idea_within_risk_caps
 from .bars import RichCandle, resample
 from .config import RunConfig
-from .order_exec import ClosedTrade, Position, force_close, open_position, simulate_exit, spread_price
+from .order_exec import ClosedTrade, Position, force_close, open_position, resolve_gap_fill, simulate_exit, spread_price
 from .risk_state import RiskState
 from .simulator_ema_cross import _swap_usd_for_one_night, _direction_bucket
 from .strategy_ema_cross import EmaCrossSignal
@@ -194,7 +194,31 @@ def run_m30_signal_simulation(
         # FIXED 2026-09-18 (Codex F2): the intrabar SL/TP check for
         # pre-existing positions used to run HERE, before this bar's
         # entries -- see the matching comment in simulator_ema_cross.py.
-        # Deferred to a unified pass after entries (below).
+        # The PURE INTRABAR (high/low) part is deferred to a unified pass
+        # after entries (below). A GAP-through of an already-open
+        # position's SL/TP is knowable IMMEDIATELY at this bar's open --
+        # resolved right here, before the risk-stop check, the
+        # timeout-exit check, and the discretionary-exit check below
+        # (FIXED 2026-09-18, Codex R1, follow-up-follow-up-follow-up
+        # audit): a mechanical stop/limit-order fill must never be masked
+        # by a timeout or discretionary exit firing first just because it
+        # happened to be checked earlier in the tick's code -- see the
+        # exact repro in docs/AUDIT_2026-09-18.md's newest section
+        # (reproduced there against simulator_ema_cross.py, but the same
+        # ordering risk applies to every discretionary/timeout exit path
+        # in this module too).
+        for s in list(open_positions.keys()):
+            bar = bar_by_symbol_by_time[s].get(t)
+            if bar is None:
+                continue
+            trade = resolve_gap_fill(
+                open_positions[s], bar, config.symbols[s], config.raw["account"]["currency"],
+                spreads[s], config.commission_round_turn_usd_per_lot, slippage_price=slippage_price,
+            )
+            if trade is not None:
+                balance += trade.net_pnl_usd + trade.position.entry_commission_usd
+                result.closed_trades.append(trade)
+                del open_positions[s]
 
         def _mark_price(symbol: str, direction: str, use_close: bool) -> float | None:
             bar = last_seen.get(symbol)
