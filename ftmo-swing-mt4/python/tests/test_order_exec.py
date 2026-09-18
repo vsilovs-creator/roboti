@@ -3,7 +3,7 @@ SL-first / no-double-spread / gap-fill rules."""
 from datetime import datetime, timezone
 
 from ftmo_sim.bars import RichCandle
-from ftmo_sim.order_exec import open_position, simulate_exit
+from ftmo_sim.order_exec import force_close, open_position, simulate_exit
 from ftmo_sim.symbol_spec import SymbolSpec
 
 EURUSD = SymbolSpec(
@@ -84,6 +84,63 @@ def test_session_close_forces_exit_at_1600_london():
     trade = simulate_exit(pos, [still_open_bar, close_bar], EURUSD, "USD", SPREAD, None)
     assert trade.exit_reason == "SESSION_CLOSE"
     assert trade.exit_time_utc == close_bar.open_time_utc
+
+
+def test_slippage_worsens_market_entry_fill_for_both_directions():
+    # docs/EXPERIMENT_PLAN_2026-09-18.md section 3 (C2/C3): adverse slippage
+    # on a market ENTRY fill -- a BUY pays MORE, a SELL receives LESS.
+    slip = 0.00005
+    long_pos = open_position("i1", "EURUSD", "BUY", 1.0, 1.1000, sl=1.0950, tp=1.1050,
+                              entry_time_utc=datetime(2026, 1, 5, 8, 10, tzinfo=timezone.utc),
+                              spread=SPREAD, risk_usd_at_entry=100.0, slippage_price=slip)
+    assert long_pos.entry_price == 1.1000 + SPREAD + slip
+    short_pos = open_position("i1", "EURUSD", "SELL", 1.0, 1.1000, sl=1.1050, tp=1.0950,
+                               entry_time_utc=datetime(2026, 1, 5, 8, 10, tzinfo=timezone.utc),
+                               spread=SPREAD, risk_usd_at_entry=100.0, slippage_price=slip)
+    assert short_pos.entry_price == 1.1000 - slip
+
+
+def test_slippage_worsens_sl_fill_but_not_tp_fill():
+    # SL is a stop-out (market fill) and gets slippage; TP does not.
+    slip = 0.00005
+    pos = open_position("i1", "EURUSD", "BUY", 1.0, 1.1000, sl=1.0950, tp=1.1050,
+                         entry_time_utc=datetime(2026, 1, 5, 8, 10, tzinfo=timezone.utc), spread=SPREAD, risk_usd_at_entry=100.0)
+    sl_bar = bar(8, 11, 1.0970, 1.0975, 1.0940, 1.0945)  # touches SL 1.0950, no gap
+    trade = simulate_exit(pos, [sl_bar], EURUSD, "USD", SPREAD, None, slippage_price=slip)
+    assert trade.exit_reason == "SL"
+    assert trade.exit_price == pos.sl - slip  # worse (lower) than the raw SL level
+
+    tp_pos = open_position("i1", "EURUSD", "BUY", 1.0, 1.1000, sl=1.0950, tp=1.1050,
+                            entry_time_utc=datetime(2026, 1, 5, 8, 10, tzinfo=timezone.utc), spread=SPREAD, risk_usd_at_entry=100.0)
+    tp_bar = bar(8, 11, 1.1040, 1.1055, 1.1035, 1.1045)
+    tp_trade = simulate_exit(tp_pos, [tp_bar], EURUSD, "USD", SPREAD, None, slippage_price=slip)
+    assert tp_trade.exit_reason == "TP"
+    assert tp_trade.exit_price == tp_pos.tp  # unaffected by slippage
+
+
+def test_slippage_worsens_gapped_sl_fill_in_the_same_adverse_direction():
+    slip = 0.00005
+    pos = open_position("i1", "EURUSD", "BUY", 1.0, 1.1000, sl=1.0990, tp=1.1050,
+                         entry_time_utc=datetime(2026, 1, 5, 8, 10, tzinfo=timezone.utc), spread=SPREAD, risk_usd_at_entry=100.0)
+    gap_bar = bar(8, 11, 1.0950, 1.0955, 1.0940, 1.0945)
+    trade = simulate_exit(pos, [gap_bar], EURUSD, "USD", SPREAD, None, slippage_price=slip)
+    assert trade.exit_reason == "SL_GAP"
+    assert trade.exit_price == gap_bar.open - slip
+
+
+def test_force_close_slippage_is_adverse_for_both_directions():
+    slip = 0.00005
+    long_pos = open_position("i1", "EURUSD", "BUY", 1.0, 1.1000, sl=1.0950, tp=1.1050,
+                              entry_time_utc=datetime(2026, 1, 5, 8, 10, tzinfo=timezone.utc), spread=SPREAD, risk_usd_at_entry=100.0)
+    trade = force_close(long_pos, 1.0995, datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc), "RISK_STOP",
+                         EURUSD, "USD", None, slippage_price=slip)
+    assert trade.exit_price == 1.0995 - slip
+
+    short_pos = open_position("i1", "EURUSD", "SELL", 1.0, 1.1000, sl=1.1050, tp=1.0950,
+                               entry_time_utc=datetime(2026, 1, 5, 8, 10, tzinfo=timezone.utc), spread=SPREAD, risk_usd_at_entry=100.0)
+    trade2 = force_close(short_pos, 1.1005, datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc), "RISK_STOP",
+                          EURUSD, "USD", None, slippage_price=slip)
+    assert trade2.exit_price == 1.1005 + slip
 
 
 def test_session_close_disabled_lets_swing_positions_hold_overnight():

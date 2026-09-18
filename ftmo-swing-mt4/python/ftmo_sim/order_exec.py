@@ -68,8 +68,20 @@ def open_position(
     entry_time_utc,
     spread: float,
     risk_usd_at_entry: float,
+    slippage_price: float = 0.0,
 ) -> Position:
-    entry_price = bid_fill_price + spread if direction == "BUY" else bid_fill_price
+    """`slippage_price` (>= 0.0) models a scenario's adverse execution
+    slippage on this MARKET entry fill -- section 3 of
+    docs/EXPERIMENT_PLAN_2026-09-18.md's C2/C3 stress scenarios. Applied
+    against the account on top of the spread already in `bid_fill_price`'s
+    BUY leg: a BUY pays MORE (entry_price higher), a SELL receives LESS
+    (entry_price lower). Defaults to 0.0 so every existing C1-shaped call
+    site is unaffected unless a scenario explicitly passes a non-zero
+    value."""
+    entry_price = (
+        bid_fill_price + spread + slippage_price if direction == "BUY"
+        else bid_fill_price - slippage_price
+    )
     return Position(
         idea_id=idea_id, symbol=symbol, direction=direction, lots=lots,
         entry_price=entry_price, sl=sl, tp=tp, entry_time_utc=entry_time_utc,
@@ -77,25 +89,32 @@ def open_position(
     )
 
 
-def _check_bar(position: Position, bar: RichCandle, spread: float) -> tuple[str, float, bool, bool] | None:
+def _check_bar(position: Position, bar: RichCandle, spread: float,
+                slippage_price: float = 0.0) -> tuple[str, float, bool, bool] | None:
     """Returns (reason, exit_price, ambiguous, gapped) if this bar closes the
     position, else None. `reason` is "SL" or "TP" (gap suffix applied by the
     caller); `gapped` means the bar's open already lay beyond the level, so
-    the fill is the open price rather than the exact SL/TP level."""
+    the fill is the open price rather than the exact SL/TP level.
+
+    `slippage_price` (>=0.0) is a scenario's adverse execution slippage,
+    applied ONLY to SL-triggered fills (a stop-out is a market fill; a TP
+    fill is modeled as achievable exactly, per
+    docs/EXPERIMENT_PLAN_2026-09-18.md section 3) -- worse for the account
+    in every case: a BUY's SL fills LOWER, a SELL's SL fills HIGHER."""
     if position.direction == "BUY":
         bid_open, bid_high, bid_low = bar.open, bar.high, bar.low
         gapped_past_sl = bid_open <= position.sl
         gapped_past_tp = bid_open >= position.tp
         if gapped_past_sl:
-            return ("SL", bid_open, gapped_past_tp, True)
+            return ("SL", bid_open - slippage_price, gapped_past_tp, True)
         if gapped_past_tp:
             return ("TP", bid_open, False, True)
         sl_hit = bid_low <= position.sl
         tp_hit = bid_high >= position.tp
         if sl_hit and tp_hit:
-            return ("SL", position.sl, True, False)
+            return ("SL", position.sl - slippage_price, True, False)
         if sl_hit:
-            return ("SL", position.sl, False, False)
+            return ("SL", position.sl - slippage_price, False, False)
         if tp_hit:
             return ("TP", position.tp, False, False)
         return None
@@ -106,15 +125,15 @@ def _check_bar(position: Position, bar: RichCandle, spread: float) -> tuple[str,
         gapped_past_sl = ask_open >= position.sl
         gapped_past_tp = ask_open <= position.tp
         if gapped_past_sl:
-            return ("SL", ask_open, gapped_past_tp, True)
+            return ("SL", ask_open + slippage_price, gapped_past_tp, True)
         if gapped_past_tp:
             return ("TP", ask_open, False, True)
         sl_hit = ask_high >= position.sl
         tp_hit = ask_low <= position.tp
         if sl_hit and tp_hit:
-            return ("SL", position.sl, True, False)
+            return ("SL", position.sl + slippage_price, True, False)
         if sl_hit:
-            return ("SL", position.sl, False, False)
+            return ("SL", position.sl + slippage_price, False, False)
         if tp_hit:
             return ("TP", position.tp, False, False)
         return None
@@ -128,6 +147,7 @@ def simulate_exit(
     spread: float,
     commission_round_turn_usd_per_lot: float | None,
     enforce_session_close: bool = True,
+    slippage_price: float = 0.0,
 ) -> ClosedTrade | None:
     """Walk forward bar by bar from entry looking for SL/TP/session-close.
     Returns None if the position is still open after m1_bars_after_entry is
@@ -146,7 +166,7 @@ def simulate_exit(
             exit_price = bar.open if position.direction == "BUY" else bar.open + spread
             return _finalize(position, exit_price, bar.open_time_utc, "SESSION_CLOSE", False, per_unit_per_lot, commission_round_turn_usd_per_lot)
 
-        result = _check_bar(position, bar, spread)
+        result = _check_bar(position, bar, spread, slippage_price)
         if result is not None:
             reason, exit_price, ambiguous, gapped = result
             final_reason = f"{reason}_GAP" if gapped else reason
@@ -162,10 +182,20 @@ def force_close(
     spec: SymbolSpec,
     account_currency: str,
     commission_round_turn_usd_per_lot: float | None,
+    slippage_price: float = 0.0,
 ) -> ClosedTrade:
+    """A forced flatten (RISK_STOP) is a market order like any other --
+    `slippage_price` (>=0.0) applies the same adverse convention as a
+    stop-out in `_check_bar`: worse for the account regardless of
+    direction. The caller still supplies the already spread-adjusted
+    bid/ask price; this only adds the extra adverse slippage on top."""
+    fill_price = (
+        fill_price_bid_or_ask_adjusted - slippage_price if position.direction == "BUY"
+        else fill_price_bid_or_ask_adjusted + slippage_price
+    )
     per_unit_per_lot = value_per_price_unit_per_lot(spec, account_currency)
     return _finalize(
-        position, fill_price_bid_or_ask_adjusted, time_utc, reason, False,
+        position, fill_price, time_utc, reason, False,
         per_unit_per_lot, commission_round_turn_usd_per_lot,
     )
 

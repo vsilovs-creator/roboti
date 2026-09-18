@@ -242,6 +242,83 @@ def test_same_tick_entry_risk_view_ignores_other_symbols_own_entry_bar_close():
         tmp_path.unlink()
 
 
+class _ScriptedSignalEngine:
+    """Fires a hand-scripted signal at each of several fixed H1 candle
+    times -- used to test S4/S5's on_opposite_signal handling, which needs
+    a SECOND (opposite-direction) signal to arrive while the first
+    position from the same engine is still open."""
+
+    def __init__(self, symbol, script: dict):
+        self.symbol = symbol
+        self.script = script  # {candle_open_time_utc: (direction, sl, tp)}
+
+    def on_h1_candle(self, candle):
+        entry = self.script.get(candle.open_time_utc)
+        if entry is None:
+            return None
+        direction, sl, tp = entry
+        return EmaCrossSignal(
+            symbol=self.symbol, direction=direction, signal_close_time_utc=candle.open_time_utc,
+            sl_price=sl, tp_price=tp, fast_ema=0, slow_ema=0, atr_h1=0,
+        )
+
+
+def _s4_s5_fixture():
+    cfg = load_config(CONFIG_PATH)
+    buy_fire_at = BASE + timedelta(hours=10)
+    sell_fire_at = BASE + timedelta(hours=15)
+    m1 = {
+        "EURUSD": _flat_m1(1.10000, hours=24),
+        "GBPUSD": _flat_m1(1.30000, hours=24),
+    }
+    script = {
+        buy_fire_at: ("BUY", 1.09900, 1.20000),
+        sell_fire_at: ("SELL", 1.10500, 1.00000),
+    }
+    engine_factory = lambda s: _ScriptedSignalEngine(s, script) if s == "EURUSD" else _ScriptedSignalEngine(s, {})
+    return cfg, m1, engine_factory
+
+
+def test_on_opposite_signal_skip_leaves_position_open_and_drops_new_signal():
+    # S2/S3's existing, unchanged behaviour: the opposite signal is just
+    # dropped, the original BUY position is left open untouched.
+    cfg, m1, engine_factory = _s4_s5_fixture()
+    result = run_h1_signal_simulation(cfg, m1, engine_factory=engine_factory, on_opposite_signal="skip")
+    assert len(result.closed_trades) == 0
+    assert "EURUSD" in result.open_positions_at_end
+    assert result.open_positions_at_end["EURUSD"].direction == "BUY"
+    assert any(sk.reason == "SYMBOL_ALREADY_HAS_OPEN_POSITION" for sk in result.skipped_signals)
+
+
+def test_on_opposite_signal_close_only_exits_and_does_not_reopen():
+    # S4: the opposite signal closes the open BUY position and is then
+    # consumed -- no new SELL position opens from that same event.
+    cfg, m1, engine_factory = _s4_s5_fixture()
+    result = run_h1_signal_simulation(cfg, m1, engine_factory=engine_factory, on_opposite_signal="close_only")
+    assert len(result.closed_trades) == 1
+    assert result.closed_trades[0].exit_reason == "OPPOSITE_SIGNAL_EXIT"
+    assert result.closed_trades[0].position.direction == "BUY"
+    assert result.open_positions_at_end == {}
+    assert any(sk.reason == "OPPOSITE_SIGNAL_CONSUMED_CLOSE_ONLY" for sk in result.skipped_signals)
+
+
+def test_on_opposite_signal_close_and_reverse_exits_then_opens_new_idea():
+    # S5: same close as S4, but then a fresh SELL idea opens from the same
+    # signal event, sized independently (no doubling/no recovery sizing).
+    cfg, m1, engine_factory = _s4_s5_fixture()
+    result = run_h1_signal_simulation(cfg, m1, engine_factory=engine_factory, on_opposite_signal="close_and_reverse")
+    assert len(result.closed_trades) == 1
+    assert result.closed_trades[0].exit_reason == "OPPOSITE_SIGNAL_EXIT"
+    assert result.closed_trades[0].position.direction == "BUY"
+    assert "EURUSD" in result.open_positions_at_end
+    reversed_pos = result.open_positions_at_end["EURUSD"]
+    assert reversed_pos.direction == "SELL"
+    # Sized fresh from the normal 25 USD budget, not doubled/related to the
+    # just-closed BUY idea's lots.
+    assert reversed_pos.risk_usd_at_entry <= cfg.risk_per_idea_usd + 1e-6
+    assert not any(sk.reason == "OPPOSITE_SIGNAL_CONSUMED_CLOSE_ONLY" for sk in result.skipped_signals)
+
+
 def test_final_equity_matches_final_balance_when_last_tick_closes_last_position():
     """A second follow-up audit (2026-09-18) found that a trade opened and
     closed within the very LAST timestamp of a run updated final_balance

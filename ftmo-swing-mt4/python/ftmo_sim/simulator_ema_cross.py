@@ -85,7 +85,30 @@ def run_h1_signal_simulation(
     account_number: int = 900000002,
     server_name: str = "OFFLINE-SIM-H1",
     enforce_session_close: bool = False,
+    on_opposite_signal: str = "skip",
+    slippage_price: float = 0.0,
 ) -> EmaCrossResult:
+    """`on_opposite_signal` (docs/EXPERIMENT_PLAN_2026-09-18.md section 4):
+    what to do when a new signal arrives for a symbol that already has an
+    open position (necessarily the OPPOSITE direction -- a same-direction
+    re-cross cannot happen without an opposite cross firing first, since
+    every engine here only emits a signal on an actual crossing/threshold
+    event). "skip" (S2/S3's existing behaviour, UNCHANGED code path below,
+    not just unchanged output) leaves the open position alone and drops the
+    new signal. "close_only" (S4) closes the open position at this signal's
+    own fill and consumes the signal -- no new position opens from that same
+    event. "close_and_reverse" (S5) does the same close, then re-runs the
+    exact same entry checks (floors/caps/costs, sized fresh at
+    config.risk_per_idea_usd, no relation to the just-closed trade's size or
+    result) to possibly open one new idea in the new signal's direction.
+
+    `slippage_price` (>=0.0) is a scenario's adverse execution slippage,
+    threaded through to every fill in this function (entries, SL-triggered
+    exits, forced/risk-stop closes, and this opposite-signal close) -- see
+    docs/EXPERIMENT_PLAN_2026-09-18.md section 3. Defaults to 0.0 (C1-shaped,
+    matching every call site before this parameter existed)."""
+    if on_opposite_signal not in ("skip", "close_only", "close_and_reverse"):
+        raise ValueError(f"unknown on_opposite_signal mode: {on_opposite_signal!r}")
     symbols = list(m1_by_symbol.keys())
     h1_by_symbol = {s: resample(m1_by_symbol[s], 60) for s in symbols}
     engines = {s: engine_factory(s) for s in symbols}
@@ -149,7 +172,7 @@ def run_h1_signal_simulation(
             trade = simulate_exit(
                 pos, [bar], config.symbols[s], config.raw["account"]["currency"],
                 spreads[s], config.commission_round_turn_usd_per_lot,
-                enforce_session_close=enforce_session_close,
+                enforce_session_close=enforce_session_close, slippage_price=slippage_price,
             )
             if trade is not None:
                 balance += trade.net_pnl_usd
@@ -198,7 +221,7 @@ def run_h1_signal_simulation(
                 trade = force_close(
                     open_positions[s], fill, t, "RISK_STOP",
                     config.symbols[s], config.raw["account"]["currency"],
-                    config.commission_round_turn_usd_per_lot,
+                    config.commission_round_turn_usd_per_lot, slippage_price=slippage_price,
                 )
                 balance += trade.net_pnl_usd
                 result.closed_trades.append(trade)
@@ -217,7 +240,12 @@ def run_h1_signal_simulation(
         while signal_ptr < len(all_signals) and all_signals[signal_ptr].signal_close_time_utc + H1 <= t:
             sig = all_signals[signal_ptr]
             signal_ptr += 1
-            if sig.symbol in open_positions:
+
+            if sig.symbol in open_positions and on_opposite_signal == "skip":
+                # S2/S3's ORIGINAL, UNCHANGED code path -- deliberately not
+                # touched by the close_only/close_and_reverse branch below,
+                # so this mode's output is byte-for-byte what it always was
+                # (see docs/EXPERIMENT_PLAN_2026-09-18.md section 4).
                 result.skipped_signals.append(SkippedEmaSignal(sig, "SYMBOL_ALREADY_HAS_OPEN_POSITION"))
                 continue
             if risk_state.stop_active() or not risk_state.history_reconciled:
@@ -229,7 +257,39 @@ def run_h1_signal_simulation(
             fill_bar = m1_index[sig.symbol][fill_idx]
             spec = config.symbols[sig.symbol]
 
-            transacted_entry = fill_bar.open + spreads[sig.symbol] if sig.direction == "BUY" else fill_bar.open
+            if sig.symbol in open_positions:
+                # on_opposite_signal in ("close_only", "close_and_reverse"):
+                # this signal is necessarily opposite-direction to the open
+                # position (see the function docstring) -- close it at THIS
+                # signal's own fill bar/price and consume the signal.
+                existing = open_positions[sig.symbol]
+                exit_price = fill_bar.open if existing.direction == "BUY" else fill_bar.open + spreads[sig.symbol]
+                close_trade = force_close(
+                    existing, exit_price, fill_bar.open_time_utc, "OPPOSITE_SIGNAL_EXIT",
+                    spec, config.raw["account"]["currency"], config.commission_round_turn_usd_per_lot,
+                    slippage_price=slippage_price,
+                )
+                balance += close_trade.net_pnl_usd
+                result.closed_trades.append(close_trade)
+                del open_positions[sig.symbol]
+                if on_opposite_signal == "close_only":
+                    result.skipped_signals.append(SkippedEmaSignal(sig, "OPPOSITE_SIGNAL_CONSUMED_CLOSE_ONLY"))
+                    continue
+                # close_and_reverse: fall through to the normal entry logic
+                # below using this SAME signal, exactly as if it had arrived
+                # while flat -- same sizing call, same floor/cap checks, no
+                # relation whatsoever to the trade just closed above. Per
+                # the plan, equity is re-derived HERE (this closure realized
+                # a known P/L at a known instant -- fill_bar.open, not a
+                # bar-close-derived mark, so this is not the section-4.1
+                # causality leak) so the reverse-entry check below sees the
+                # just-closed trade's effect, not the stale pre-close value.
+                equity = balance + _floating_pnl()
+
+            transacted_entry = (
+                fill_bar.open + spreads[sig.symbol] + slippage_price if sig.direction == "BUY"
+                else fill_bar.open - slippage_price
+            )
             sl_distance = (transacted_entry - sig.sl_price) if sig.direction == "BUY" else (sig.sl_price - transacted_entry)
             if sl_distance <= 0:
                 result.skipped_signals.append(SkippedEmaSignal(sig, "EXECUTION_PRICE_INVALIDATED_SL"))
@@ -293,6 +353,7 @@ def run_h1_signal_simulation(
             pos = open_position(
                 f"ema-idea-{idea_counter}", sig.symbol, sig.direction, lots, fill_bar.open,
                 sig.sl_price, sig.tp_price, fill_bar.open_time_utc, spreads[sig.symbol], actual_risk,
+                slippage_price=slippage_price,
             )
             open_positions[sig.symbol] = pos
             newly_opened[sig.symbol] = fill_bar
@@ -306,7 +367,7 @@ def run_h1_signal_simulation(
             trade = simulate_exit(
                 pos, [fill_bar], config.symbols[s], config.raw["account"]["currency"],
                 spreads[s], config.commission_round_turn_usd_per_lot,
-                enforce_session_close=enforce_session_close,
+                enforce_session_close=enforce_session_close, slippage_price=slippage_price,
             )
             if trade is not None:
                 balance += trade.net_pnl_usd
