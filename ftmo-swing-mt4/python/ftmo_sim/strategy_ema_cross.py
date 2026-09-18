@@ -86,11 +86,18 @@ class EmaCrossSignal:
     symbol: str
     direction: str  # "BUY" | "SELL"
     signal_close_time_utc: object
-    sl_price: float
-    tp_price: float
+    sl_price: float | None  # None means "use sl_distance_price from the actual fill" (see below)
+    tp_price: float | None  # None means "no fixed TP" (S6 Donchian) -- never a fabricated sentinel price
     fast_ema: float
     slow_ema: float
     atr_h1: float
+    # Added for S6 (Donchian): when sl_price is None, the runner computes
+    # the real SL level as (actual fill price -/+ sl_distance_price)
+    # instead of a signal-candle-close-derived absolute level -- "from the
+    # actual fill price", per docs/EXPERIMENT_PLAN_2026-09-18.md section 2.
+    # None/unused for every engine that already sets an absolute sl_price
+    # (S2/S3/S4/S5).
+    sl_distance_price: float | None = None
 
 
 class EmaCrossEngine:

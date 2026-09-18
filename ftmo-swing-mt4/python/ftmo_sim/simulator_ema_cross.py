@@ -114,12 +114,22 @@ def run_h1_signal_simulation(
     engines = {s: engine_factory(s) for s in symbols}
 
     all_signals: list[EmaCrossSignal] = []
+    # (symbol, exit_flags_close_time_utc, DonchianExitFlags) -- S6's
+    # discretionary exit, opportunistically read off `engine.last_exit_flags`
+    # right after on_h1_candle() for engines that set it (duck-typed: every
+    # existing engine that never sets this attribute simply contributes
+    # nothing here, unaffected).
+    all_exit_checks: list[tuple] = []
     for s in symbols:
         for candle in h1_by_symbol[s]:
             sig = engines[s].on_h1_candle(candle)
             if sig is not None:
                 all_signals.append(sig)
+            exit_flags = getattr(engines[s], "last_exit_flags", None)
+            if exit_flags is not None:
+                all_exit_checks.append((s, candle.open_time_utc, exit_flags))
     all_signals.sort(key=lambda e: e.signal_close_time_utc)
+    all_exit_checks.sort(key=lambda e: e[1])
 
     m1_index = {s: m1_by_symbol[s] for s in symbols}
 
@@ -145,6 +155,7 @@ def run_h1_signal_simulation(
     last_seen: dict[str, RichCandle] = {}
     idea_counter = 0
     signal_ptr = 0
+    exit_check_ptr = 0
     spreads = {s: spread_price(s, config.symbols[s], config.spread_points_hypothetical) for s in symbols}
 
     for t in all_times:
@@ -227,6 +238,43 @@ def run_h1_signal_simulation(
                 result.closed_trades.append(trade)
                 del open_positions[s]
 
+        # S6's discretionary exit (Donchian 10-bar-extreme crossing): a
+        # "prior-candle signal exit" per docs/EXPERIMENT_PLAN_2026-09-18.md
+        # section 4's causality ordering -- decided from CLOSED H1 bars
+        # strictly before this instant, so it is processed here, BEFORE
+        # this timestamp's entries, exactly like the risk-stop block above.
+        # Only acts if the currently open position's direction matches the
+        # flag (a flag with no matching open position is simply irrelevant,
+        # not logged as a skip -- it was never a signal to act on, unlike an
+        # entry). Fill uses the bar's OPEN (known at this instant), never
+        # its close, and is NOT slippage-adjusted (a discretionary exit is
+        # neither a market entry nor an SL-triggered stop-out, per section 3).
+        while exit_check_ptr < len(all_exit_checks) and all_exit_checks[exit_check_ptr][1] + H1 <= t:
+            exit_symbol, exit_close_time, exit_flags = all_exit_checks[exit_check_ptr]
+            exit_check_ptr += 1
+            pos = open_positions.get(exit_symbol)
+            if pos is None:
+                continue
+            should_close = (
+                (pos.direction == "BUY" and exit_flags.close_long)
+                or (pos.direction == "SELL" and exit_flags.close_short)
+            )
+            if not should_close:
+                continue
+            fill_idx = first_bar_at_or_after(exit_symbol, exit_close_time + H1)
+            if fill_idx is None or m1_index[exit_symbol][fill_idx].open_time_utc != t:
+                continue
+            fill_bar = m1_index[exit_symbol][fill_idx]
+            exit_price = fill_bar.open if pos.direction == "BUY" else fill_bar.open + spreads[exit_symbol]
+            trade = force_close(
+                pos, exit_price, fill_bar.open_time_utc, "DISCRETIONARY_EXIT",
+                config.symbols[exit_symbol], config.raw["account"]["currency"],
+                config.commission_round_turn_usd_per_lot, slippage_price=0.0,
+            )
+            balance += trade.net_pnl_usd
+            result.closed_trades.append(trade)
+            del open_positions[exit_symbol]
+
         # Positions opened THIS timestamp -- checked against their own entry
         # bar's high/low immediately below, before the loop moves to the
         # next timestamp. Without this, a position opened at this bar's
@@ -290,7 +338,19 @@ def run_h1_signal_simulation(
                 fill_bar.open + spreads[sig.symbol] + slippage_price if sig.direction == "BUY"
                 else fill_bar.open - slippage_price
             )
-            sl_distance = (transacted_entry - sig.sl_price) if sig.direction == "BUY" else (sig.sl_price - transacted_entry)
+            if sig.sl_price is not None:
+                sl_price = sig.sl_price
+            else:
+                # S6 (Donchian): SL is anchored to the ACTUAL fill price,
+                # not the signal candle's close -- see
+                # docs/EXPERIMENT_PLAN_2026-09-18.md section 2 and
+                # strategy_donchian.py's module docstring.
+                sl_price = (
+                    transacted_entry - sig.sl_distance_price if sig.direction == "BUY"
+                    else transacted_entry + sig.sl_distance_price
+                )
+            tp_price = sig.tp_price  # may be None (no fixed TP) -- S6
+            sl_distance = (transacted_entry - sl_price) if sig.direction == "BUY" else (sl_price - transacted_entry)
             if sl_distance <= 0:
                 result.skipped_signals.append(SkippedEmaSignal(sig, "EXECUTION_PRICE_INVALIDATED_SL"))
                 continue
@@ -352,7 +412,7 @@ def run_h1_signal_simulation(
             idea_counter += 1
             pos = open_position(
                 f"ema-idea-{idea_counter}", sig.symbol, sig.direction, lots, fill_bar.open,
-                sig.sl_price, sig.tp_price, fill_bar.open_time_utc, spreads[sig.symbol], actual_risk,
+                sl_price, tp_price, fill_bar.open_time_utc, spreads[sig.symbol], actual_risk,
                 slippage_price=slippage_price,
             )
             open_positions[sig.symbol] = pos
@@ -404,4 +464,32 @@ def run_ema_cross_simulation(config: RunConfig, m1_by_symbol: dict[str, list[Ric
     return run_h1_signal_simulation(
         config, m1_by_symbol, engine_factory=engine_factory,
         enforce_session_close=p.get("enforce_session_close", False),
+    )
+
+
+def run_donchian_simulation(
+    config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]],
+    slippage_price: float = 0.0,
+) -> EmaCrossResult:
+    """Runs S6 (Donchian H1 20/10 with an ATR stop) using
+    config.raw['strategies']['donchian_v1'] -- see
+    docs/EXPERIMENT_PLAN_2026-09-18.md section 2. No fixed TP, no
+    on_opposite_signal mode of its own (an "opposite" entry signal while a
+    position is open would only ever skip here -- the exit is entirely the
+    separate discretionary 10-bar-extreme check, per spec "no auto-reverse
+    on the exit signal")."""
+    from .strategy_donchian import DonchianAtrEngine
+
+    p = config.raw["strategies"]["donchian_v1"]
+    engine_factory = lambda symbol: DonchianAtrEngine(
+        symbol,
+        entry_period=p["entry_period_h1"],
+        exit_period=p["exit_period_h1"],
+        atr_period=p["atr_period_h1"],
+        atr_sl_multiple=p["atr_sl_multiple"],
+    )
+    return run_h1_signal_simulation(
+        config, m1_by_symbol, engine_factory=engine_factory,
+        enforce_session_close=False, on_opposite_signal="skip",
+        slippage_price=slippage_price,
     )

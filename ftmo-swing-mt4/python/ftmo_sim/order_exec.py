@@ -34,7 +34,7 @@ class Position:
     lots: float
     entry_price: float
     sl: float
-    tp: float
+    tp: float | None  # None = no fixed TP (S6 Donchian) -- never a fabricated sentinel price
     entry_time_utc: object
     risk_usd_at_entry: float
 
@@ -64,7 +64,7 @@ def open_position(
     lots: float,
     bid_fill_price: float,
     sl: float,
-    tp: float,
+    tp: float | None,
     entry_time_utc,
     spread: float,
     risk_usd_at_entry: float,
@@ -100,17 +100,21 @@ def _check_bar(position: Position, bar: RichCandle, spread: float,
     applied ONLY to SL-triggered fills (a stop-out is a market fill; a TP
     fill is modeled as achievable exactly, per
     docs/EXPERIMENT_PLAN_2026-09-18.md section 3) -- worse for the account
-    in every case: a BUY's SL fills LOWER, a SELL's SL fills HIGHER."""
+    in every case: a BUY's SL fills LOWER, a SELL's SL fills HIGHER.
+
+    `position.tp is None` (S6 Donchian -- no fixed TP) simply disables every
+    TP check below; never a fabricated huge/sentinel TP price."""
+    has_tp = position.tp is not None
     if position.direction == "BUY":
         bid_open, bid_high, bid_low = bar.open, bar.high, bar.low
         gapped_past_sl = bid_open <= position.sl
-        gapped_past_tp = bid_open >= position.tp
+        gapped_past_tp = has_tp and bid_open >= position.tp
         if gapped_past_sl:
             return ("SL", bid_open - slippage_price, gapped_past_tp, True)
         if gapped_past_tp:
             return ("TP", bid_open, False, True)
         sl_hit = bid_low <= position.sl
-        tp_hit = bid_high >= position.tp
+        tp_hit = has_tp and bid_high >= position.tp
         if sl_hit and tp_hit:
             return ("SL", position.sl - slippage_price, True, False)
         if sl_hit:
@@ -123,13 +127,13 @@ def _check_bar(position: Position, bar: RichCandle, spread: float,
         ask_high = bar.high + spread
         ask_low = bar.low + spread
         gapped_past_sl = ask_open >= position.sl
-        gapped_past_tp = ask_open <= position.tp
+        gapped_past_tp = has_tp and ask_open <= position.tp
         if gapped_past_sl:
             return ("SL", ask_open + slippage_price, gapped_past_tp, True)
         if gapped_past_tp:
             return ("TP", ask_open, False, True)
         sl_hit = ask_high >= position.sl
-        tp_hit = ask_low <= position.tp
+        tp_hit = has_tp and ask_low <= position.tp
         if sl_hit and tp_hit:
             return ("SL", position.sl + slippage_price, True, False)
         if sl_hit:

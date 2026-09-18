@@ -103,6 +103,13 @@
       "tp_r_multiple": 3.0,
       "enforce_session_close": false,
       "_comment": "Standard textbook parameters, not tuned to this sample. Holds positions overnight/across the 16:00 London boundary by design (a swing-style trend-follower)."
+    },
+    "donchian_v1": {
+      "entry_period_h1": 20,
+      "exit_period_h1": 10,
+      "atr_period_h1": 14,
+      "atr_sl_multiple": 2.0,
+      "_comment": "S6, docs/EXPERIMENT_PLAN_2026-09-18.md section 2. Parameters taken directly from the task instructions, not fitted. No fixed TP; exits on the 10-bar-extreme crossing or the ATR stop only."
     }
   }
 }

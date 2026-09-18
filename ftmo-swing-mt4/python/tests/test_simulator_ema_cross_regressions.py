@@ -319,6 +319,105 @@ def test_on_opposite_signal_close_and_reverse_exits_then_opens_new_idea():
     assert not any(sk.reason == "OPPOSITE_SIGNAL_CONSUMED_CLOSE_ONLY" for sk in result.skipped_signals)
 
 
+def _h1_bucket_m1(hour_index: int, open_, high_, low_, close_) -> list[RichCandle]:
+    """60 M1 bars for one H1 bucket whose resample() aggregate has exactly
+    the given open/high/low/close (assumes high_ is the true max and low_
+    the true min across open_/close_ too, which every call site below
+    respects)."""
+    t = BASE + timedelta(hours=hour_index)
+    bars = [RichCandle(open_time_utc=t, open=open_, high=open_, low=open_, close=open_)]
+    bars.append(RichCandle(open_time_utc=t + timedelta(minutes=1), open=open_, high=high_, low=low_, close=close_))
+    for m in range(2, 60):
+        bars.append(RichCandle(open_time_utc=t + timedelta(minutes=m), open=close_, high=close_, low=close_, close=close_))
+    return bars
+
+
+def test_donchian_sl_anchored_to_actual_fill_not_signal_close_and_no_tp_trigger():
+    """S6: SL = fill_price -/+ 2xATR, computed from the ACTUAL transacted
+    fill (next H1 bar's M1 open), not the signal candle's own close -- and
+    with no fixed TP, a large favorable move must never close the
+    position via a fabricated TP level."""
+    from ftmo_sim.strategy_donchian import DonchianAtrEngine
+
+    cfg = load_config(CONFIG_PATH)
+    engine_factory = lambda s: (
+        DonchianAtrEngine(s, entry_period=3, exit_period=2, atr_period=1, atr_sl_multiple=2.0)
+        if s == "EURUSD" else DonchianAtrEngine(s, entry_period=999, exit_period=999, atr_period=1, atr_sl_multiple=2.0)
+    )
+
+    eur_m1 = []
+    eur_m1 += _h1_bucket_m1(0, 1.10000, 1.10000, 1.10000, 1.10000)
+    eur_m1 += _h1_bucket_m1(1, 1.10000, 1.10000, 1.10000, 1.10000)
+    eur_m1 += _h1_bucket_m1(2, 1.10000, 1.10000, 1.10000, 1.10000)
+    # Breaks u3=1.10000 by a small amount -> small, realistic ATR -> BUY signal.
+    eur_m1 += _h1_bucket_m1(3, 1.10000, 1.10030, 1.09990, 1.10020)
+    # Fill bucket: a 50-pip gap up from the signal candle's own close
+    # (1.10020) -- deliberately far, so an SL anchored to the signal
+    # close vs. anchored to the real ~1.10500 fill land in clearly
+    # different, non-overlapping ranges.
+    eur_m1 += _h1_bucket_m1(4, 1.10500, 1.10520, 1.10490, 1.10500)
+    # Then a huge favorable spike -- must NOT close via any TP (there is none).
+    eur_m1 += _h1_bucket_m1(5, 1.10500, 5.00000, 1.10500, 1.10500)
+    for extra_hour in range(6, 12):
+        eur_m1 += _h1_bucket_m1(extra_hour, 1.10500, 1.10500, 1.10500, 1.10500)
+
+    m1 = {"EURUSD": eur_m1, "GBPUSD": _flat_m1(1.30000, hours=12)}
+    result = run_h1_signal_simulation(cfg, m1, engine_factory=engine_factory, on_opposite_signal="skip")
+
+    assert len(result.closed_trades) == 0  # never hit any TP (there is none) or SL (never went low enough)
+    assert "EURUSD" in result.open_positions_at_end
+    pos = result.open_positions_at_end["EURUSD"]
+    assert pos.tp is None
+    # A signal-close-anchored SL would sit at roughly 1.10020 - 0.0008 =
+    # ~1.0994; a fill-anchored SL sits much higher, near ~1.1042 -- assert
+    # it landed in the fill-anchored range, not anywhere near the
+    # signal-close-anchored one.
+    assert pos.sl > 1.10000
+    assert pos.sl < pos.entry_price
+
+
+def test_donchian_discretionary_exit_closes_matching_direction_position():
+    """S6: the 10-bar-extreme (here: 2-bar, for a compact test) crossing
+    exit must actually close an open matching-direction position through
+    the full run_h1_signal_simulation pipeline -- not just compute the
+    right boolean in isolation (already covered by
+    test_strategy_donchian.py's unit tests)."""
+    from ftmo_sim.strategy_donchian import DonchianAtrEngine
+
+    cfg = load_config(CONFIG_PATH)
+    engine_factory = lambda s: (
+        DonchianAtrEngine(s, entry_period=3, exit_period=2, atr_period=1, atr_sl_multiple=2.0)
+        if s == "EURUSD" else DonchianAtrEngine(s, entry_period=999, exit_period=999, atr_period=1, atr_sl_multiple=2.0)
+    )
+
+    eur_m1 = []
+    eur_m1 += _h1_bucket_m1(0, 1.10000, 1.10000, 1.10000, 1.10000)
+    eur_m1 += _h1_bucket_m1(1, 1.10000, 1.10000, 1.10000, 1.10000)
+    eur_m1 += _h1_bucket_m1(2, 1.10000, 1.10000, 1.10000, 1.10000)
+    eur_m1 += _h1_bucket_m1(3, 1.10000, 1.10030, 1.09990, 1.10020)  # BUY entry signal
+    eur_m1 += _h1_bucket_m1(4, 1.10500, 1.10520, 1.10490, 1.10500)  # fills here
+    eur_m1 += _h1_bucket_m1(5, 1.10500, 5.00000, 1.10500, 1.10500)  # no TP to hit
+    # Exit window going into hour 6 is {hour4, hour5} lows = {1.10490, 1.10500}
+    # -> min = 1.10490. This candle's close breaks below it -> close_long.
+    # Its own LOW (1.10445) is kept just above the SL (fill 1.10510 -
+    # 2xATR 0.00080 = 1.10430) so the SL doesn't fire first intrabar.
+    eur_m1 += _h1_bucket_m1(6, 1.10480, 1.10480, 1.10445, 1.10440)
+    eur_m1 += _h1_bucket_m1(7, 1.10440, 1.10440, 1.10440, 1.10440)  # exit fills here
+    for extra_hour in range(8, 12):
+        eur_m1 += _h1_bucket_m1(extra_hour, 1.10440, 1.10440, 1.10440, 1.10440)
+
+    m1 = {"EURUSD": eur_m1, "GBPUSD": _flat_m1(1.30000, hours=12)}
+    result = run_h1_signal_simulation(cfg, m1, engine_factory=engine_factory, on_opposite_signal="skip")
+
+    assert result.open_positions_at_end == {}
+    assert len(result.closed_trades) == 1
+    trade = result.closed_trades[0]
+    assert trade.exit_reason == "DISCRETIONARY_EXIT"
+    assert trade.position.direction == "BUY"
+    assert trade.exit_time_utc == BASE + timedelta(hours=7)
+    assert trade.exit_price == pytest.approx(1.10440)  # hour 7's M1 open, no slippage applied
+
+
 def test_final_equity_matches_final_balance_when_last_tick_closes_last_position():
     """A second follow-up audit (2026-09-18) found that a trade opened and
     closed within the very LAST timestamp of a run updated final_balance
