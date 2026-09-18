@@ -22,13 +22,16 @@ input double  MaxConcurrentRiskUSD     = 100.0;
 input double  CorrelatedGroupMaxRiskUSD= 50.0;
 input double  ExecutionBufferUSD       = 5.0;
 
-// UNVERIFIED -- must be confirmed against the live terminal/broker before
-// this EA leaves EXPLORATORY status (see docs/UNKNOWNS.md item 1).
-input double  ServerUTCOffsetHours     = 0.0;   // broker server time minus UTC, ignoring its own DST
-input bool    ServerObservesEUDST      = false; // if true, offset above is the WINTER (non-DST) offset and EU DST rules are applied on top
+// CONFIRMED 2026-09-18 (account owner): GMT+2 winter / GMT+3 summer (DST),
+// same transition dates as the EU. Re-verify against the live terminal
+// (TimeCurrent() vs TimeGMT()) before trusting this on a real account --
+// see docs/UNKNOWNS.md item 1.
+input double  ServerUTCOffsetHours     = 2.0;   // broker server time minus UTC in winter/standard time
+input bool    ServerObservesEUDST      = true;  // true: add +1h on top of the above during EU DST (last Sun Mar - last Sun Oct)
 
-// UNKNOWN -- never silently treated as 0 outside an explicitly EXPLORATORY run.
-input double  CommissionPerLotRoundTurnUSD = -1.0; // -1 means "unconfirmed"
+// CONFIRMED 2026-09-18 (account owner): 5 USD per lot. Taken as ROUND-TURN
+// (not per side) -- double-check against the broker's actual fee schedule.
+input double  CommissionPerLotRoundTurnUSD = 5.0; // -1 would mean "unconfirmed"
 input double  SpreadPointsHypothetical_S1  = 10;
 input double  SpreadPointsHypothetical_S2  = 15;
 

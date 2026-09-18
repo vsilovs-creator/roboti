@@ -74,7 +74,7 @@ USD) caps total open risk regardless of grouping.
 | 3 | B0=10500, daily 10200 (not trailing 9700) | `test_scenario_3_b0_10500` |
 | 4 | equity=9730, +40 USD rejected, no double count | `test_scenario_4_no_double_counting_floating_loss`, `test_scenario_4b_remaining_risk_not_full_original_risk` |
 | 5 | pre-midnight balance=10200, equity=9850 -> next-day floor 9900 | `test_scenario_5_next_day_floor_forces_early_action` |
-| 6 | commission/swap/foreign position/pending activation/correlated pairs | `test_account_risk.py::test_correlated_group_cap_*`, `test_portfolio_cap_blocks_regardless_of_grouping`, `order_exec` commission test; commission itself is UNKNOWN (see `docs/UNKNOWNS.md`) |
+| 6 | commission/swap/foreign position/pending activation/correlated pairs | `test_account_risk.py::test_correlated_group_cap_*`, `test_portfolio_cap_blocks_regardless_of_grouping`, `order_exec` commission test; commission is now CONFIRMED at 5 USD/lot round-turn (see `docs/UNKNOWNS.md`) |
 | 7 | lot rounding, min lot > budget, invalid tick value, freeze level, SL refusal | `test_symbol_spec.py` (Python); `OpenMarketOrderWithRetry`'s post-fill SL/stops-level re-check (MQL4, NOT_RUN) |
 | 8 | restart after daily/total stop, 2nd instance, incomplete history | `test_risk_state.py` (all 5 tests) |
 | 9 | DST transitions, alt server-DST hypothesis, weekend with no midnight tick | `test_time_utils.py` |

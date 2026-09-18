@@ -65,10 +65,11 @@ def _require_aware_utc(dt: datetime) -> None:
 @dataclass(frozen=True)
 class ServerTimeModel:
     """Converts naive broker/server timestamps (as read from the CSV files) to
-    timezone-aware UTC. The true server offset and DST calendar are UNKNOWN
-    (see docs/UNKNOWNS.md item 1) -- this class exists so that assumption is a
-    single, explicit, swappable, and testable place instead of a hardcoded
-    UTC offset scattered through the codebase.
+    timezone-aware UTC. The server offset and DST calendar are now CONFIRMED
+    (see docs/UNKNOWNS.md) but this class still exists so that assumption is
+    a single, explicit, swappable, and testable place instead of a hardcoded
+    UTC offset scattered through the codebase -- and so an unverified/
+    sensitivity scenario stays clearly distinguishable from the confirmed one.
 
     mode:
       - "assume_utc": server timestamps are treated as already UTC (no shift,
@@ -76,15 +77,27 @@ class ServerTimeModel:
         it is NOT claimed to be correct for the real broker feed.
       - "fixed_offset": server_utc_offset_hours is a constant offset from UTC
         with no DST (e.g. a broker that never shifts its own clock).
-      - "zone_like": the server clock is hypothesized to follow the DST rules
-        of `hypothesis_zone_name` (e.g. "Europe/Bucharest" for an EET-like
-        broker) while remaining a distinct clock from Prague/London. This is
-        for labeled sensitivity analysis only, never for a validated result.
+      - "zone_like": the server clock follows the DST rules of
+        `hypothesis_zone_name` while remaining a distinct clock from
+        Prague/London. CONFIRMED (2026-09-18, account owner): this broker's
+        MT4 server runs GMT+2 in winter / GMT+3 in summer (DST), on the same
+        transition dates as the EU. "Europe/Bucharest" is used as the
+        zoneinfo stand-in for exactly that GMT+2/+3-with-EU-DST pattern
+        (zoneinfo has no generic "fixed EET-like, non-Romanian" zone; the
+        offsets and transition dates are what matter here, not the label).
+        Pass verified=True once a mode is actually confirmed like this one
+        is; leave verified=False for a labeled sensitivity/what-if scenario.
+
+    verified: True once a human has confirmed this is the real server clock
+        (not merely a structural placeholder or a sensitivity hypothesis).
+        Callers that produce anything claiming to be a validated (non
+        EXPLORATORY) result must check this and refuse/label accordingly.
     """
 
     mode: str
     server_utc_offset_hours: float | None = None
     hypothesis_zone_name: str | None = None
+    verified: bool = False
 
     def __post_init__(self) -> None:
         if self.mode == "fixed_offset" and self.server_utc_offset_hours is None:
@@ -109,9 +122,4 @@ class ServerTimeModel:
 
     @property
     def is_verified(self) -> bool:
-        """False for every mode until a human confirms the real server clock.
-
-        Callers that produce anything claiming to be a validated (non
-        EXPLORATORY) result must check this and refuse/label accordingly.
-        """
-        return False
+        return self.verified

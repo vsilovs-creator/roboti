@@ -62,6 +62,7 @@ def load_config(path: Path) -> RunConfig:
             mode=mode,
             server_utc_offset_hours=tz_cfg.get("fixed_offset_hours"),
             hypothesis_zone_name=tz_cfg.get("zone_like_hypothesis"),
+            verified=bool(tz_cfg.get("verified", False)),
         )
 
     symbols = {

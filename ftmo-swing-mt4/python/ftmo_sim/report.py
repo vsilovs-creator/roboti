@@ -28,9 +28,9 @@ def _month_key(dt):
     return (dt.year, dt.month)
 
 
-def build_monthly_table(result: SimulationResult, full_months: set) -> list[MonthStat]:
+def build_monthly_table(closed_trades: list, full_months: set) -> list[MonthStat]:
     by_month: dict = defaultdict(lambda: [0.0, 0])
-    for t in result.closed_trades:
+    for t in closed_trades:
         k = _month_key(t.exit_time_utc)
         by_month[k][0] += t.net_pnl_usd
         by_month[k][1] += 1
@@ -89,7 +89,7 @@ def build_report(
     for sk in result.skipped_signals:
         skip_reasons[sk.reason] += 1
 
-    monthly = build_monthly_table(result, full_calendar_months)
+    monthly = build_monthly_table(result.closed_trades, full_calendar_months)
     full_months = [m for m in monthly if m.is_full_calendar_month]
     worst_full_month = min(full_months, key=lambda m: m.net_usd) if full_months else None
     months_meeting_target = [m for m in full_months if m.net_usd >= 0.20 * initial_balance or m.net_usd >= 2000]

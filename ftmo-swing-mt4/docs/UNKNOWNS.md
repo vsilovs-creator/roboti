@@ -40,20 +40,27 @@ particular, are known to change over time at any broker.
 - Sample window: 2026-07-15/16 through 2026-09-17, ~2 months, with **exactly
   one** full calendar month (August 2026).
 
+## Confirmed by the account owner (2026-09-18)
+
+- **Server clock:** FTMO's MT4 server runs GMT+2 in winter/standard time and
+  GMT+3 in summer/DST, transitioning on the same dates as the EU. Encoded as
+  `ServerTimeModel(mode="zone_like", hypothesis_zone_name="Europe/Bucharest",
+  verified=True)` (Python) / `ServerUTCOffsetHours=2.0,
+  ServerObservesEUDST=true` (MQL4 `Config.mqh`) -- "Europe/Bucharest" is used
+  purely as the zoneinfo database entry with exactly this GMT+2/+3-with-
+  EU-DST pattern, not a claim about the broker's physical location. This
+  changed the baseline result materially: re-running with the corrected
+  clock shifted which candles fall inside the London range/entry windows,
+  producing 20 trades instead of 14 (see `reports/run_002_confirmed_tz_commission/`
+  vs. the now-superseded `reports/run_001/`).
+- **Commission:** 5 USD per lot, taken as a round-turn total (not per side --
+  this reading is still worth double-checking against the broker's fee
+  schedule, since "X per lot" is quoted either way across brokers). Encoded
+  as `commission_round_turn_usd_per_lot: 5.0` in `config/config.example.json`.
+
 ## Still UNKNOWN -- must be confirmed before this leaves EXPLORATORY status
 
-1. **Server clock UTC offset and its own DST calendar.** The CSV timestamps
-   carry no timezone marker. `time_utils.ServerTimeModel` (Python) /
-   `ServerUTCOffsetHours` + `ServerObservesEUDST` (MQL4 `Config.mqh`) default
-   to `assume_utc` / `0.0, false` purely so the code runs deterministically;
-   this is **not** claimed to be the real broker clock. Confirm via the
-   terminal (`TimeCurrent()` vs `TimeGMT()`, and watch it across a DST
-   transition) before trusting any wall-clock-sensitive result.
-2. **Commission.** Never read from the terminal in this environment.
-   `commission_round_turn_usd_per_lot` is `null` in the example config, and
-   every report generated without it set is labeled EXPLORATORY. Must be
-   filled from `AccountInfoDouble`/broker terms before a validated run.
-3. **Leverage / actual margin requirement.** "Margin percentage 100%" is not
+1. **Leverage / actual margin requirement.** "Margin percentage 100%" is not
    the same as 1:100 leverage; the true leverage/margin call behavior was
    not in scope of the screenshots provided and is not modeled (this
    prototype never modes margin calls, only the FTMO/robot equity floors).

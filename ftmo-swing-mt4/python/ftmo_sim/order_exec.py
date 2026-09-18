@@ -127,15 +127,22 @@ def simulate_exit(
     account_currency: str,
     spread: float,
     commission_round_turn_usd_per_lot: float | None,
+    enforce_session_close: bool = True,
 ) -> ClosedTrade | None:
     """Walk forward bar by bar from entry looking for SL/TP/session-close.
     Returns None if the position is still open after m1_bars_after_entry is
     exhausted (caller must keep feeding bars on the next call as more data
-    arrives, or treat it as still-open at the end of the run)."""
+    arrives, or treat it as still-open at the end of the run).
+
+    enforce_session_close=False is for a swing/trend strategy that is meant
+    to hold positions overnight (spec section 6: Swing accounts are not
+    required to flatten daily/weekly) -- the 16:00 London force-close is a
+    design choice specific to the intraday London Range Breakout baseline,
+    not a universal rule."""
     per_unit_per_lot = value_per_price_unit_per_lot(spec, account_currency)
     for bar in m1_bars_after_entry:
         tod = london_time_of_day(bar.open_time_utc)
-        if tod >= SESSION_CLOSE_LONDON:
+        if enforce_session_close and tod >= SESSION_CLOSE_LONDON:
             exit_price = bar.open if position.direction == "BUY" else bar.open + spread
             return _finalize(position, exit_price, bar.open_time_utc, "SESSION_CLOSE", False, per_unit_per_lot, commission_round_turn_usd_per_lot)
 

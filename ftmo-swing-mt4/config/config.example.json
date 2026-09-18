@@ -35,11 +35,11 @@
     "ftmo_day_tz": "Europe/Prague",
     "strategy_session_tz": "Europe/London",
     "server_time_model": {
-      "mode": "UNVERIFIED",
-      "_comment": "One of 'fixed_offset_hours', 'zone_like', 'assume_utc'. Must be confirmed from the broker/terminal (server time vs GMT, and its own DST calendar) before CSV timestamps can be trusted for wall-clock-sensitive logic. See docs/UNKNOWNS.md item 1.",
+      "mode": "zone_like",
+      "verified": true,
+      "_comment": "CONFIRMED 2026-09-18 by the account owner: FTMO's MT4 server runs GMT+2 (winter/standard) / GMT+3 (summer/DST), transitioning on the same dates as the EU. 'Europe/Bucharest' is used purely as the zoneinfo database entry with that exact GMT+2/+3-with-EU-DST pattern -- it is not a claim that the broker is physically in Romania.",
       "fixed_offset_hours": null,
-      "zone_like_hypothesis": "Europe/Bucharest",
-      "_comment_zone_like": "Common broker pattern (server = EET-like, UTC+2/+3 with its own DST) offered ONLY as a labeled sensitivity-analysis hypothesis, never as ground truth."
+      "zone_like_hypothesis": "Europe/Bucharest"
     }
   },
   "symbols": {
@@ -73,8 +73,8 @@
     }
   },
   "costs": {
-    "commission_round_turn_usd_per_lot": null,
-    "_comment_commission": "UNKNOWN -- must be read from the live account/terminal. Never silently treated as 0 outside an explicitly labeled hypothetical scenario.",
+    "commission_round_turn_usd_per_lot": 5.0,
+    "_comment_commission": "CONFIRMED 2026-09-18 by the account owner: 5 USD per lot. Taken here as a ROUND-TURN total (not per side) -- this reading itself is an assumption worth double-checking against the broker's fee schedule, since '5 USD per lot' is commonly quoted either way.",
     "spread_model": "hypothetical_fixed_points",
     "spread_points_hypothetical": {"EURUSD": 10, "GBPUSD": 15},
     "_comment_spread": "Spread is floating per the instrument specification screenshot; no historical spread feed was supplied. This fixed-point value is a labeled EXPLORATORY placeholder only."

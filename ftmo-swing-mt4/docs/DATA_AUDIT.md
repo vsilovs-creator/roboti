@@ -36,12 +36,12 @@ against the SHA-256-verified raw files in `data/raw/`.
   session boundary.
 - **Suspected intraday gaps (355 / 262):** everything else over 1 minute --
   most are short (a minute or few with no tick), some cluster right after
-  the weekend re-open (see `docs/UNKNOWNS.md` item 1 and the Monday
-  `INSUFFICIENT_RANGE_COVERAGE` day-skips in the baseline run's
-  `day_outcomes.csv`, where the market appears to take roughly an hour to
-  start producing bars each Monday in this sample). None are fabricated or
-  filled in; the simulator and MQL4 signal engine both skip a day outright
-  rather than guess a missing candle's price.
+  the weekend re-open (see the Monday `INSUFFICIENT_RANGE_COVERAGE`
+  day-skips in the baseline run's `day_outcomes.csv`, where the market
+  appears to take roughly an hour to start producing bars each Monday in
+  this sample, in server-local time). None are fabricated or filled in; the
+  simulator and MQL4 signal engine both skip a day outright rather than
+  guess a missing candle's price.
 
 ## Data sufficiency
 

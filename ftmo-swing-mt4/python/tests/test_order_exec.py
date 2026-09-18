@@ -84,3 +84,14 @@ def test_session_close_forces_exit_at_1600_london():
     trade = simulate_exit(pos, [still_open_bar, close_bar], EURUSD, "USD", SPREAD, None)
     assert trade.exit_reason == "SESSION_CLOSE"
     assert trade.exit_time_utc == close_bar.open_time_utc
+
+
+def test_session_close_disabled_lets_swing_positions_hold_overnight():
+    # A trend/swing strategy (strategy_ema_cross.py, strategy_bb_reversion.py)
+    # is meant to hold across the 16:00 London boundary -- the force-close is
+    # specific to the intraday London breakout baseline, not a universal rule.
+    pos = open_position("i1", "EURUSD", "BUY", 1.0, 1.1000, sl=1.0950, tp=1.1050,
+                         entry_time_utc=datetime(2026, 1, 5, 8, 10, tzinfo=timezone.utc), spread=SPREAD, risk_usd_at_entry=100.0)
+    past_1600_bar = bar(20, 0, 1.1012, 1.1018, 1.1008, 1.1015)
+    trade = simulate_exit(pos, [past_1600_bar], EURUSD, "USD", SPREAD, None, enforce_session_close=False)
+    assert trade is None  # still open -- neither SL nor TP hit, and no forced close

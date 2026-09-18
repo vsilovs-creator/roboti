@@ -74,6 +74,18 @@ def test_server_time_model_zone_like_sensitivity_hypothesis():
     assert model.is_verified is False
 
 
+def test_server_time_model_confirmed_gmt2_gmt3_matches_production_config():
+    # CONFIRMED 2026-09-18 (account owner): FTMO's MT4 server is GMT+2
+    # winter / GMT+3 summer (EU DST dates) -- this is what
+    # config/config.example.json now sets, with verified=True.
+    model = ServerTimeModel(mode="zone_like", hypothesis_zone_name="Europe/Bucharest", verified=True)
+    assert model.is_verified is True
+    winter = datetime(2026, 1, 10, 14, 0)  # GMT+2 in January
+    assert model.to_utc(winter) == datetime(2026, 1, 10, 12, 0, tzinfo=timezone.utc)
+    summer = datetime(2026, 8, 10, 15, 0)  # GMT+3 in August
+    assert model.to_utc(summer) == datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+
+
 def test_server_time_model_rejects_aware_input():
     model = ServerTimeModel(mode="assume_utc")
     with pytest.raises(ValueError):
