@@ -185,3 +185,96 @@ def test_swap_accrues_once_per_night_held_and_triples_on_wednesday():
     )
     assert result.total_swap_usd == pytest.approx(6 * one_night)
     assert result.final_balance == pytest.approx(cfg.initial_balance + result.total_swap_usd)
+
+
+def test_same_tick_entry_risk_view_ignores_other_symbols_own_entry_bar_close():
+    """A second, independent follow-up audit (2026-09-18) found that a
+    symbol's OWN entry-bar close (only knowable later within that same
+    minute) was leaking into another symbol's simultaneous entry decision
+    via the correlated/portfolio risk-cap check, since a newly-opened
+    position's "remaining risk" was computed from that bar's close rather
+    than treated as its full, just-sized risk (no move has happened yet at
+    the open). Reproduced: with only EURUSD's entry-minute CLOSE changed
+    (its OPEN, and therefore its actual fill price, held fixed), GBPUSD's
+    simultaneous entry outcome used to differ. Fixed; this pins it down."""
+    import json
+    import tempfile
+
+    raw = json.loads(CONFIG_PATH.read_text())
+    raw["risk"]["risk_per_idea_usd"] = 30.0
+    raw["risk"]["correlated_group_max_risk_usd"] = 50.0
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+        json.dump(raw, tmp)
+        tmp_path = Path(tmp.name)
+    try:
+        cfg = load_config(tmp_path)
+        fire_at = BASE + timedelta(hours=10)
+        fill_time = fire_at + timedelta(hours=1)
+
+        def flat_with_entry_bar_close(price, entry_bar_close):
+            bars = []
+            t = BASE
+            for _ in range(12 * 60):
+                o = h = l = c = price
+                if t == fill_time:
+                    o, c = price, entry_bar_close
+                    h, l = max(o, c), min(o, c)
+                bars.append(RichCandle(open_time_utc=t, open=o, high=h, low=l, close=c))
+                t += timedelta(minutes=1)
+            return bars
+
+        results = []
+        for eur_entry_bar_close in (1.10000, 1.11500):
+            m1 = {
+                "EURUSD": flat_with_entry_bar_close(1.10000, eur_entry_bar_close),
+                "GBPUSD": _flat_m1(1.30000),
+            }
+            sl_by_symbol = {"EURUSD": (1.09900, 1.20000), "GBPUSD": (1.29900, 1.40000)}
+            engine_factory = lambda s: _OneShotSignalEngine(
+                s, fire_at=fire_at, direction="BUY", sl=sl_by_symbol[s][0], tp=sl_by_symbol[s][1],
+            )
+            result = run_h1_signal_simulation(cfg, m1, engine_factory=engine_factory)
+            gbp_skip_reasons = [sk.reason for sk in result.skipped_signals if sk.signal.symbol == "GBPUSD"]
+            results.append(gbp_skip_reasons)
+
+        assert results[0] == results[1]
+    finally:
+        tmp_path.unlink()
+
+
+def test_final_equity_matches_final_balance_when_last_tick_closes_last_position():
+    """A second follow-up audit (2026-09-18) found that a trade opened and
+    closed within the very LAST timestamp of a run updated final_balance
+    but not the already-recorded last equity-curve point (which was
+    recorded before that timestamp's own entries/closures happened) --
+    final_equity could come back stale (still the untouched initial
+    balance) while final_balance correctly reflected the loss. Reproduced
+    exactly: balance 9974.70, open_positions 0, but final_equity 10000
+    before the fix. With no open positions at the end, these two must
+    agree."""
+    cfg = load_config(CONFIG_PATH)
+    fire_at = BASE + timedelta(hours=10)
+    fill_time = fire_at + timedelta(hours=1)
+
+    bars = []
+    t = BASE
+    while t <= fill_time:
+        o = h = l = c = 1.10000
+        if t == fill_time:
+            o, h, l, c = 1.10000, 1.10000, 1.09000, 1.09000  # breaches its own SL intrabar
+        bars.append(RichCandle(open_time_utc=t, open=o, high=h, low=l, close=c))
+        t += timedelta(minutes=1)
+    m1 = {
+        "EURUSD": bars,
+        "GBPUSD": [RichCandle(open_time_utc=b.open_time_utc, open=1.3, high=1.3, low=1.3, close=1.3) for b in bars],
+    }
+
+    engine_factory = lambda s: _OneShotSignalEngine(
+        "EURUSD", fire_at=fire_at,
+    ) if s == "EURUSD" else _OneShotSignalEngine("GBPUSD", fire_at=BASE + timedelta(days=999))
+
+    result = run_h1_signal_simulation(cfg, m1, engine_factory=engine_factory)
+    assert len(result.closed_trades) == 1
+    assert result.open_positions_at_end == {}
+    assert result.final_equity == pytest.approx(result.final_balance)
+    assert result.final_balance < cfg.initial_balance  # sanity: the loss actually happened

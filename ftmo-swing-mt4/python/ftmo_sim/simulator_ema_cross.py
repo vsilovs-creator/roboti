@@ -156,18 +156,34 @@ def run_h1_signal_simulation(
                 result.closed_trades.append(trade)
                 del open_positions[s]
 
-        floating = 0.0
-        for s, pos in open_positions.items():
-            bar = last_seen.get(s)
-            if bar is None:
-                continue
-            mark_bid = bar.close
-            mark_ask = mark_bid + spreads[s]
-            price = mark_bid if pos.direction == "BUY" else mark_ask
-            sign = 1 if pos.direction == "BUY" else -1
-            floating += sign * (price - pos.entry_price) * pos.lots * config.symbols[s].contract_size
-        equity = balance + floating
-        result.equity_curve.append((t, equity, balance))
+        def _floating_pnl() -> float:
+            floating = 0.0
+            for s, pos in open_positions.items():
+                bar = last_seen.get(s)
+                if bar is None:
+                    continue
+                mark_bid = bar.close
+                mark_ask = mark_bid + spreads[s]
+                price = mark_bid if pos.direction == "BUY" else mark_ask
+                sign = 1 if pos.direction == "BUY" else -1
+                floating += sign * (price - pos.entry_price) * pos.lots * config.symbols[s].contract_size
+            return floating
+
+        # This is the PRE-entry equity: used to gate this timestamp's new
+        # entries and to evaluate the risk stop, using only what's already
+        # known before any of this timestamp's own entries/closures happen
+        # (spec: decide entries from already-known events only). It is NOT
+        # the recorded equity-curve point for time t -- see "settled" below,
+        # computed once this timestamp's entries and same-bar closures have
+        # actually happened, which is the correct point to report/re-use as
+        # final_equity. FIXED 2026-09-18 (follow-up audit): the equity-curve
+        # point used to be recorded HERE, before that timestamp's own
+        # entries/closures, so a trade opened and closed within the very
+        # last timestamp of the run updated final_balance but not the
+        # already-recorded last equity-curve point -- final_equity could
+        # come back stale (e.g. still the untouched initial balance) while
+        # final_balance correctly reflected the loss.
+        equity = balance + _floating_pnl()
 
         was_stopped = risk_state.stop_active()
         risk_state.evaluate(equity, config.ftmo_limits)
@@ -218,21 +234,39 @@ def run_h1_signal_simulation(
             if sl_distance <= 0:
                 result.skipped_signals.append(SkippedEmaSignal(sig, "EXECUTION_PRICE_INVALIDATED_SL"))
                 continue
-            lots = lots_for_risk(config.risk_per_idea_usd, sl_distance, spec, config.raw["account"]["currency"])
+            commission_per_lot = config.commission_round_turn_usd_per_lot or 0.0
+            lots = lots_for_risk(
+                config.risk_per_idea_usd, sl_distance, spec, config.raw["account"]["currency"],
+                extra_cost_usd_per_lot=commission_per_lot,
+            )
             if lots == 0.0:
                 result.skipped_signals.append(SkippedEmaSignal(sig, "MIN_LOT_EXCEEDS_RISK_BUDGET"))
                 continue
-            actual_risk = risk_usd_for_lots(lots, sl_distance, spec, config.raw["account"]["currency"])
+            actual_risk = risk_usd_for_lots(
+                lots, sl_distance, spec, config.raw["account"]["currency"],
+                extra_cost_usd_per_lot=commission_per_lot,
+            )
 
             open_risk_views = []
             open_risk_by_idea: dict[str, float] = {}
             idea_symbol: dict[str, str] = {}
             idea_bucket: dict[str, str] = {}
             for other_symbol, pos in open_positions.items():
-                bar = last_seen.get(other_symbol)
-                mark = bar.close if pos.direction == "BUY" else bar.close + spreads[other_symbol]
-                remaining = abs(mark - pos.sl) * pos.lots * config.symbols[other_symbol].contract_size
                 bucket = _direction_bucket(pos.direction)
+                if other_symbol in newly_opened:
+                    # FIXED 2026-09-18 (follow-up audit): this position was
+                    # opened THIS SAME timestamp, at this bar's open -- using
+                    # this same bar's CLOSE (a value only known later within
+                    # the bar) to mark it would leak intrabar/end-of-minute
+                    # information into another symbol's entry decision at
+                    # the identical instant. At the open, no move has
+                    # happened yet, so its "remaining risk right now" is
+                    # simply its full originally-sized risk.
+                    remaining = pos.risk_usd_at_entry
+                else:
+                    bar = last_seen.get(other_symbol)
+                    mark = bar.close if pos.direction == "BUY" else bar.close + spreads[other_symbol]
+                    remaining = abs(mark - pos.sl) * pos.lots * config.symbols[other_symbol].contract_size
                 open_risk_views.append(OpenPositionRiskView(other_symbol, remaining, bucket))
                 open_risk_by_idea[other_symbol] = remaining
                 idea_symbol[other_symbol] = other_symbol
@@ -278,6 +312,13 @@ def run_h1_signal_simulation(
                 balance += trade.net_pnl_usd
                 result.closed_trades.append(trade)
                 del open_positions[s]
+
+        # Settled equity: AFTER this timestamp's own entries and same-bar
+        # closures, so the recorded point actually reflects everything that
+        # happened at time t (see the long comment above `equity =` for why
+        # the earlier, pre-entry value must not be the one recorded here).
+        settled_equity = balance + _floating_pnl()
+        result.equity_curve.append((t, settled_equity, balance))
 
     result.final_balance = balance
     result.open_positions_at_end = dict(open_positions)

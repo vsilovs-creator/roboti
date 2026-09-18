@@ -60,13 +60,18 @@ double ValuePerPriceUnitPerLot(const SymbolSpec &spec)
   }
 
 // Lots (floored to lot step, clamped to [0, maxLot]) whose worst-case loss
-// at slDistancePrice does not exceed riskUsd. Returns 0.0 if even the
-// minimum lot would exceed budget -- caller must skip the trade, never
-// silently use the minimum lot anyway.
-double LotsForRisk(double riskUsd, double slDistancePrice, const SymbolSpec &spec)
+// at slDistancePrice PLUS any known deterministic per-lot cost (commission)
+// does not exceed riskUsd. `extraCostUsdPerLot` folds that cost into the
+// SAME budget the SL distance is sized against -- mirrors
+// ../../python/ftmo_sim/symbol_spec.py::lots_for_risk's 2026-09-18 follow-up
+// audit fix (commission must not sit outside the planned risk budget).
+// Returns 0.0 if even the minimum lot would exceed budget -- caller must
+// skip the trade, never silently use the minimum lot anyway.
+double LotsForRisk(double riskUsd, double slDistancePrice, const SymbolSpec &spec,
+                    double extraCostUsdPerLot = 0.0)
   {
    if(slDistancePrice <= 0) return 0.0;
-   double perLot = slDistancePrice * ValuePerPriceUnitPerLot(spec);
+   double perLot = slDistancePrice * ValuePerPriceUnitPerLot(spec) + extraCostUsdPerLot;
    if(perLot <= 0) return 0.0;
    double rawLots = riskUsd / perLot;
    double lots = FloorToLotStep(rawLots, spec.lotStep);
@@ -75,9 +80,10 @@ double LotsForRisk(double riskUsd, double slDistancePrice, const SymbolSpec &spe
    return lots;
   }
 
-double RiskUsdForLots(double lots, double slDistancePrice, const SymbolSpec &spec)
+double RiskUsdForLots(double lots, double slDistancePrice, const SymbolSpec &spec,
+                       double extraCostUsdPerLot = 0.0)
   {
-   return lots * slDistancePrice * ValuePerPriceUnitPerLot(spec);
+   return lots * (slDistancePrice * ValuePerPriceUnitPerLot(spec) + extraCostUsdPerLot);
   }
 
 #endif

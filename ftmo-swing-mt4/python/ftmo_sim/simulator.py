@@ -156,18 +156,26 @@ def run_simulation(config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]])
                 del open_positions[s]
 
         # -- mark-to-market equity + risk stop evaluation --
-        floating = 0.0
-        for s, pos in open_positions.items():
-            bar = last_seen.get(s)
-            if bar is None:
-                continue
-            mark_bid = bar.close
-            mark_ask = mark_bid + spreads[s]
-            price = mark_bid if pos.direction == "BUY" else mark_ask
-            sign = 1 if pos.direction == "BUY" else -1
-            floating += sign * (price - pos.entry_price) * pos.lots * config.symbols[s].contract_size
-        equity = balance + floating
-        result.equity_curve.append((t, equity, balance))
+        def _floating_pnl() -> float:
+            floating = 0.0
+            for s, pos in open_positions.items():
+                bar = last_seen.get(s)
+                if bar is None:
+                    continue
+                mark_bid = bar.close
+                mark_ask = mark_bid + spreads[s]
+                price = mark_bid if pos.direction == "BUY" else mark_ask
+                sign = 1 if pos.direction == "BUY" else -1
+                floating += sign * (price - pos.entry_price) * pos.lots * config.symbols[s].contract_size
+            return floating
+
+        # PRE-entry equity, for gating this timestamp's entries/risk-stop
+        # only -- NOT the recorded equity-curve point. See the matching,
+        # longer comment in simulator_ema_cross.py (FIXED 2026-09-18,
+        # follow-up audit) for why the curve point must be recorded AFTER
+        # this timestamp's own entries/same-bar closures (as "settled"
+        # below), not here.
+        equity = balance + _floating_pnl()
 
         was_stopped = risk_state.stop_active()
         risk_state.evaluate(equity, config.ftmo_limits)
@@ -224,17 +232,34 @@ def run_simulation(config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]])
             if sl_distance <= 0:
                 result.skipped_signals.append(SkippedSignal(sig, "EXECUTION_PRICE_INVALIDATED_SL"))
                 continue
-            lots = lots_for_risk(config.risk_per_idea_usd, sl_distance, spec, config.raw["account"]["currency"])
+            commission_per_lot = config.commission_round_turn_usd_per_lot or 0.0
+            lots = lots_for_risk(
+                config.risk_per_idea_usd, sl_distance, spec, config.raw["account"]["currency"],
+                extra_cost_usd_per_lot=commission_per_lot,
+            )
             if lots == 0.0:
                 result.skipped_signals.append(SkippedSignal(sig, "MIN_LOT_EXCEEDS_RISK_BUDGET"))
                 continue
-            actual_risk = risk_usd_for_lots(lots, sl_distance, spec, config.raw["account"]["currency"])
+            actual_risk = risk_usd_for_lots(
+                lots, sl_distance, spec, config.raw["account"]["currency"],
+                extra_cost_usd_per_lot=commission_per_lot,
+            )
 
             open_risk_views = []
             for other_symbol, pos in open_positions.items():
-                bar = last_seen.get(other_symbol)
-                mark = bar.close if pos.direction == "BUY" else bar.close + spreads[other_symbol]
-                remaining = abs(mark - pos.sl) * pos.lots * config.symbols[other_symbol].contract_size
+                if other_symbol in newly_opened:
+                    # FIXED 2026-09-18 (follow-up audit) -- see the matching
+                    # comment in simulator_ema_cross.py: this position was
+                    # opened THIS SAME timestamp, so its "remaining risk
+                    # right now" is its full originally-sized risk, not a
+                    # mark derived from this same bar's close (which leaks
+                    # later-in-the-bar information into another symbol's
+                    # simultaneous entry decision).
+                    remaining = pos.risk_usd_at_entry
+                else:
+                    bar = last_seen.get(other_symbol)
+                    mark = bar.close if pos.direction == "BUY" else bar.close + spreads[other_symbol]
+                    remaining = abs(mark - pos.sl) * pos.lots * config.symbols[other_symbol].contract_size
                 open_risk_views.append(OpenPositionRiskView(other_symbol, remaining, _direction_bucket(pos.direction)))
 
             floor = risk_state.balance_at_midnight - config.ftmo_limits.robot_daily_working_buffer_offset_usd
@@ -279,6 +304,9 @@ def run_simulation(config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]])
                 balance += trade.net_pnl_usd
                 result.closed_trades.append(trade)
                 del open_positions[s]
+
+        settled_equity = balance + _floating_pnl()
+        result.equity_curve.append((t, settled_equity, balance))
 
     result.final_balance = balance
     result.day_outcomes_by_symbol = {s: engines[s].day_outcomes for s in symbols}

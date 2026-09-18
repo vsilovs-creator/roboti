@@ -87,9 +87,15 @@ def lots_for_risk(
     sl_distance_price: float,
     spec: SymbolSpec,
     account_currency: str,
+    extra_cost_usd_per_lot: float = 0.0,
 ) -> float:
     """Lot size (rounded down to lot_step, clamped to [0, max_lot]) whose
-    worst-case loss at sl_distance_price does not exceed risk_usd.
+    worst-case loss at sl_distance_price PLUS any known deterministic
+    per-lot cost (commission, a planned execution/slippage reserve) does
+    not exceed risk_usd. `extra_cost_usd_per_lot` folds those costs into the
+    same budget the SL distance is sized against -- e.g. pass the round-turn
+    commission per lot so a 25 USD "planned risk" genuinely includes the
+    commission on that trade, not just the price move to the stop.
 
     Returns 0.0 if even the minimum lot would exceed the risk budget --
     callers must treat 0.0 as "skip this trade", never silently trade the
@@ -98,7 +104,7 @@ def lots_for_risk(
     if sl_distance_price <= 0:
         return 0.0
     per_unit_per_lot = value_per_price_unit_per_lot(spec, account_currency)
-    risk_per_lot = sl_distance_price * per_unit_per_lot
+    risk_per_lot = sl_distance_price * per_unit_per_lot + extra_cost_usd_per_lot
     if risk_per_lot <= 0:
         return 0.0
     raw_lots = risk_usd / risk_per_lot
@@ -109,6 +115,12 @@ def lots_for_risk(
     return lots
 
 
-def risk_usd_for_lots(lots: float, sl_distance_price: float, spec: SymbolSpec, account_currency: str) -> float:
+def risk_usd_for_lots(
+    lots: float,
+    sl_distance_price: float,
+    spec: SymbolSpec,
+    account_currency: str,
+    extra_cost_usd_per_lot: float = 0.0,
+) -> float:
     per_unit_per_lot = value_per_price_unit_per_lot(spec, account_currency)
-    return lots * sl_distance_price * per_unit_per_lot
+    return lots * (sl_distance_price * per_unit_per_lot + extra_cost_usd_per_lot)

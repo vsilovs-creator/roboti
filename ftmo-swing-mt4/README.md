@@ -279,6 +279,40 @@ python3 scripts/run_strategy_comparison.py \
 No indicators or filters beyond what each strategy's own definition
 specifies were added to any of the three.
 
+## MQL4 test instructions (STATIC_REVIEW only -- not yet executed)
+
+None of the MQL4 code in this repo has been compiled or run; every claim
+about it is a structural/static review, not a verified test. If MetaEditor/
+MT4 becomes available, this is the minimum concrete sequence to move any
+item from STATIC_REVIEW to EXECUTED (do this on a DEMO account only,
+`EnableLiveTrading=false`):
+
+1. Copy `mql4/Include/FTMO/*.mqh` into `<terminal data folder>/MQL4/Include/FTMO/`
+   and `mql4/Experts/*.mq4` into `<terminal data folder>/MQL4/Experts/`.
+2. Open both `.mq4` files in MetaEditor and compile (F7). Fix any syntax
+   error MetaEditor reports -- this alone would already upgrade the "brace/
+   paren-balance-only" check done in this environment to a real compile
+   check.
+3. Attach `FTMO_Swing_EA_EmaCross.mq4` to an EURUSD chart on a DEMO account
+   with `EnableLiveTrading=false` (the default). Confirm in the Experts log:
+   a) `AcquireInstanceLock` succeeds (no FATAL on OnInit); b) attaching a
+   SECOND copy of either EA to the same account in the same terminal FAILS
+   OnInit with the lock message -- this is the concrete test for the
+   section-4.6 instance-lock fix.
+4. Let it run for a few closed H1 bars and diff the `DRYRUN`/`SIGNAL` log
+   lines' lot sizes and skip reasons against `python/run_ema_cross.py`'s
+   output for the same symbol/period, to sanity-check the commission-folded
+   lot sizing (`LotsForRisk` with `extraCostUsdPerLot`) and the portfolio/
+   correlated-cap check (`NewIdeaWithinRiskCaps`) agree with the Python side
+   bar-for-bar.
+5. To test the section-4.4 unprotected-position path without a real broker
+   failure, temporarily force `OrderModify` and `OrderClose` to fail (e.g.
+   comment out the real calls and return `false`) in a scratch copy, confirm
+   `MarkUnprotected`+`SaveRiskState` fires, restart the terminal, and confirm
+   `ReconcileUnprotectedPosition` still retries the SAME ticket after
+   restart (proving persistence survived, not just in-memory retry) before
+   restoring the real calls.
+
 ## Open questions for the account owner
 
 1. Given the multiple-comparisons demo above (26% of arbitrary parameter
@@ -299,8 +333,11 @@ specifies were added to any of the three.
    remaining gap before this can be trusted even at the "compiles and
    behaves as designed" level -- is MT4/MetaEditor access something you can
    provide, or should the next session attempt this a different way?
-4. The 2026-09-18 audit's own instance-guard critique (`docs/AUDIT_2026-09-18.md`
-   P1-6) is only partially addressed: the account/server check cannot
-   actually distinguish a legitimate restart from a second concurrent
-   controller instance, and a fully exclusive lock was judged out of scope
-   for this round. Worth a dedicated pass before any live/demo use?
+4. UPDATE 2026-09-18 (follow-up audit): the instance-guard critique
+   (`docs/AUDIT_2026-09-18.md` P1-6) is now partially closed --
+   `Persistence.mqh` has a real exclusive-open lock file
+   (`AcquireInstanceLock`/`ReleaseInstanceLock`) that blocks a second EA
+   instance in the SAME terminal/account. It still cannot stop a second
+   MT4 TERMINAL INSTALLATION (different data folder/machine) from trading
+   the same account unopposed -- see `docs/UNKNOWNS.md` item 8. Worth a
+   dedicated pass (or a broker-side control) before any live/demo use.

@@ -46,9 +46,12 @@ input bool EnableLiveTrading = false; // false = signal-only/dry-run (default, p
 RiskState g_state;
 SymbolSpec g_spec1, g_spec2;
 EmaCrossState g_ema1, g_ema2;
+datetime g_unprotectedLastRetryAt = 0; // throttle state for ReconcileUnprotectedPosition (section 4.4)
+int      g_unprotectedRetryCount  = 0;
 
 int OnInit()
   {
+   if(!AcquireInstanceLock()) return INIT_FAILED; // section 4.6: real single-controller lock, see Persistence.mqh
    if(!LoadSymbolSpec(Sym1(), g_spec1) || !LoadSymbolSpec(Sym2(), g_spec2))
      {
       Print("FTMO: FATAL -- could not load symbol specs, refusing to init");
@@ -79,6 +82,7 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    SaveRiskState(g_state);
+   ReleaseInstanceLock();
   }
 
 double AccountWideEquityIgnoringDoubleCount()
@@ -110,9 +114,9 @@ void ProcessSymbolSignals(string symbol, SymbolSpec &spec, EmaCrossState &state)
    FtmoLog("SIGNAL", symbol + " EMA cross " + (ev.direction == 1 ? "BUY" : "SELL") +
            " sl=" + DoubleToString(ev.slPrice, spec.digits) + " tp=" + DoubleToString(ev.tpPrice, spec.digits));
 
-   if(!g_state.historyReconciled || StopActive(g_state))
+   if(!g_state.historyReconciled || StopActive(g_state) || HasUnprotectedPosition(g_state))
      {
-      FtmoLog("SIGNAL", symbol + " signal dropped -- entry not allowed (stop active or unreconciled history)");
+      FtmoLog("SIGNAL", symbol + " signal dropped -- entry not allowed (stop active, unreconciled history, or an unresolved unprotected position)");
       return;
      }
    if(HasOpenOrderForSymbol(symbol))
@@ -132,27 +136,41 @@ void ProcessSymbolSignals(string symbol, SymbolSpec &spec, EmaCrossState &state)
       return;
      }
 
-   double lots = LotsForRisk(RiskPerIdeaUSD, slDistance, spec);
+   // FIXED 2026-09-18 (follow-up audit, section 4.5): fold the round-turn
+   // commission into the SAME 25 USD risk budget the SL distance is sized
+   // against, mirroring ../../python/ftmo_sim/symbol_spec.py's matching
+   // fix -- an unconfirmed commission (-1) contributes 0.0 rather than being
+   // fabricated.
+   double commissionPerLot = CommissionIsConfirmed() ? CommissionPerLotRoundTurnUSD : 0.0;
+   double lots = LotsForRisk(RiskPerIdeaUSD, slDistance, spec, commissionPerLot);
    if(lots <= 0)
      {
       FtmoLog("SIGNAL", symbol + " min lot exceeds risk budget -- skipping");
       return;
      }
-   double actualRisk = RiskUsdForLots(lots, slDistance, spec);
+   double actualRisk = RiskUsdForLots(lots, slDistance, spec, commissionPerLot);
 
    double foreignUnknownRiskFlag = 0.0;
-   double openRisk = ScanAccountWideRemainingRiskUsd(foreignUnknownRiskFlag);
+   double pendingWorstCaseUsd = 0.0;
+   double openRisk = ScanAccountWideRemainingRiskUsd(foreignUnknownRiskFlag, pendingWorstCaseUsd);
    double floor = ApplicableRobotFloor(g_state.balanceAtMidnight);
    double equity = AccountWideEquityIgnoringDoubleCount();
    bool allowed = NewEntryAllowed(equity, floor, openRisk, foreignUnknownRiskFlag != 0.0,
-                                  0.0, actualRisk, 0.0, ExecutionBufferUSD);
+                                  pendingWorstCaseUsd, actualRisk, 0.0, ExecutionBufferUSD);
    if(!allowed)
      {
       FtmoLog("SIGNAL", symbol + " blocked by pre-trade projected-equity check");
       return;
      }
-   // NOTE: same correlated-group-cap gap as FTMO_Swing_EA.mq4 -- see that
-   // file's matching comment and account_risk.py::new_idea_within_risk_caps.
+   // FIXED 2026-09-18 (follow-up audit, section 4.5): portfolio + correlated
+   // -group cap check, previously a documented gap with no enforcement.
+   string directionBucket = (ev.direction == 1) ? "SHORT_USD" : "LONG_USD";
+   if(!NewIdeaWithinRiskCaps(Sym1(), Sym2(), symbol, directionBucket, actualRisk,
+                             MaxConcurrentRiskUSD, CorrelatedGroupMaxRiskUSD))
+     {
+      FtmoLog("SIGNAL", symbol + " blocked by portfolio/correlated-group risk cap");
+      return;
+     }
 
    if(!EnableLiveTrading)
      {
@@ -161,11 +179,17 @@ void ProcessSymbolSignals(string symbol, SymbolSpec &spec, EmaCrossState &state)
      }
 
    int cmd = (ev.direction == 1) ? OP_BUY : OP_SELL;
-   OpenMarketOrderWithRetry(symbol, cmd, lots, ev.slPrice, ev.tpPrice, "FTMO-EMACROSS-v1");
+   OpenMarketOrderWithRetry(symbol, cmd, lots, ev.slPrice, ev.tpPrice, "FTMO-EMACROSS-v1", g_state);
   }
 
 void OnTick()
   {
+   // Section 4.4: resolve any persisted unprotected-position emergency
+   // state FIRST, every tick, independent of rollover/floor state -- must
+   // not wait for a daily-limit breach to keep retrying it.
+   if(EnableLiveTrading)
+      ReconcileUnprotectedPosition(g_state, g_unprotectedLastRetryAt, g_unprotectedRetryCount);
+
    string todayKey = FtmoTradingDayKey(TimeGMT());
    if(RolloverIfNeeded(g_state, todayKey, AccountBalance()))
       FtmoLog("ROLLOVER", "new FTMO day " + todayKey + " balance_at_midnight=" + DoubleToString(g_state.balanceAtMidnight, 2));

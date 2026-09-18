@@ -99,7 +99,20 @@ particular, are known to change over time at any broker.
    `RiskState`'s (Python) / `Persistence.mqh`'s (MQL4) account/server match
    check accepts a legitimate restart of the same controller and a second
    concurrent instance identically -- both present the same account/server.
-   A true exclusive lock (e.g. a lock file with a liveness heartbeat) has
-   not been implemented; flagged by the 2026-09-18 audit
-   (`docs/AUDIT_2026-09-18.md` P1-6) and accepted as a known gap rather than
-   fixed in that round.
+   UPDATE 2026-09-18 (follow-up audit): `Persistence.mqh` now also has
+   `AcquireInstanceLock()`/`ReleaseInstanceLock()`, an exclusive-open lock
+   file (`FTMO_InstanceLock_<account>.lock`, opened without `FILE_SHARE_*`
+   and held open for the EA's whole lifetime) called from both EAs'
+   `OnInit`/`OnDeinit`, which DOES block a second EA instance attached in
+   the SAME terminal/data-folder to the same account (the actual scenario
+   this project's own two EA files could otherwise race on). This remains
+   NOT_RUN/STATIC_REVIEW -- exclusivity here is a documented MQL4 file-open
+   semantic, not something this environment could verify against a real
+   terminal. It STILL does not, and cannot, stop a second MT4 TERMINAL
+   INSTALLATION (a separate data folder, e.g. a copied/portable install on
+   another machine) from independently acquiring its own lock in its own
+   `MQL4/Files` directory and trading the same broker account unopposed --
+   that would need a server-side/broker-side control outside this
+   prototype's reach. Originally flagged by the 2026-09-18 audit
+   (`docs/AUDIT_2026-09-18.md` P1-6); partially closed by the above, with
+   the cross-terminal gap still open and tracked here.

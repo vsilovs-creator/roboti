@@ -31,9 +31,12 @@ SymbolSpec g_spec1, g_spec2;
 BreakoutRetestState g_br1, g_br2;
 datetime g_lastM5_1 = 0, g_lastM5_2 = 0;
 datetime g_lastH1_1 = 0, g_lastH1_2 = 0;
+datetime g_unprotectedLastRetryAt = 0; // throttle state for ReconcileUnprotectedPosition (section 4.4)
+int      g_unprotectedRetryCount  = 0;
 
 int OnInit()
   {
+   if(!AcquireInstanceLock()) return INIT_FAILED; // section 4.6: real single-controller lock, see Persistence.mqh
    if(!LoadSymbolSpec(Sym1(), g_spec1) || !LoadSymbolSpec(Sym2(), g_spec2))
      {
       Print("FTMO: FATAL -- could not load symbol specs, refusing to init");
@@ -64,6 +67,7 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    SaveRiskState(g_state);
+   ReleaseInstanceLock();
   }
 
 double AccountWideEquityIgnoringDoubleCount()
@@ -147,32 +151,41 @@ void ProcessSymbolSignals(string symbol, SymbolSpec &spec, BreakoutRetestState &
       return;
      }
 
-   double lots = LotsForRisk(RiskPerIdeaUSD, slDistance, spec);
+   // FIXED 2026-09-18 (follow-up audit, section 4.5): fold the round-turn
+   // commission into the SAME 25 USD risk budget the SL distance is sized
+   // against, mirroring ../../python/ftmo_sim/symbol_spec.py's matching fix.
+   double commissionPerLot = CommissionIsConfirmed() ? CommissionPerLotRoundTurnUSD : 0.0;
+   double lots = LotsForRisk(RiskPerIdeaUSD, slDistance, spec, commissionPerLot);
    if(lots <= 0)
      {
       FtmoLog("SIGNAL", symbol + " min lot exceeds risk budget -- skipping");
       return;
      }
-   double actualRisk = RiskUsdForLots(lots, slDistance, spec);
+   double actualRisk = RiskUsdForLots(lots, slDistance, spec, commissionPerLot);
 
    double foreignUnknownRiskFlag = 0.0;
-   double openRisk = ScanAccountWideRemainingRiskUsd(foreignUnknownRiskFlag);
+   double pendingWorstCaseUsd = 0.0;
+   double openRisk = ScanAccountWideRemainingRiskUsd(foreignUnknownRiskFlag, pendingWorstCaseUsd);
    double floor = ApplicableRobotFloor(g_state.balanceAtMidnight);
    double equity = AccountWideEquityIgnoringDoubleCount();
 
    double unaccountedCosts = CommissionIsConfirmed() ? 0.0 : 0.0; // never fabricated; EXPLORATORY runs simply carry the label instead
    bool allowed = NewEntryAllowed(equity, floor, openRisk, foreignUnknownRiskFlag != 0.0,
-                                  0.0, actualRisk, unaccountedCosts, ExecutionBufferUSD);
+                                  pendingWorstCaseUsd, actualRisk, unaccountedCosts, ExecutionBufferUSD);
    if(!allowed)
      {
       FtmoLog("SIGNAL", symbol + " blocked by pre-trade projected-equity check");
       return;
      }
-   // NOTE: the correlated-group cap (EURUSD+GBPUSD same-direction ideas
-   // capped at CorrelatedGroupMaxRiskUSD) must additionally be checked here
-   // against the OTHER managed symbol's open risk + direction before
-   // sending -- omitted in this NOT_RUN skeleton for brevity; see
-   // account_risk.py::new_idea_within_risk_caps for the exact rule to port.
+   // FIXED 2026-09-18 (follow-up audit, section 4.5): portfolio + correlated
+   // -group cap check, previously a documented "omitted for brevity" gap.
+   string directionBucket = (ev.direction == BR_DIR_BUY) ? "SHORT_USD" : "LONG_USD";
+   if(!NewIdeaWithinRiskCaps(Sym1(), Sym2(), symbol, directionBucket, actualRisk,
+                             MaxConcurrentRiskUSD, CorrelatedGroupMaxRiskUSD))
+     {
+      FtmoLog("SIGNAL", symbol + " blocked by portfolio/correlated-group risk cap");
+      return;
+     }
 
    if(!EnableLiveTrading)
      {
@@ -182,12 +195,18 @@ void ProcessSymbolSignals(string symbol, SymbolSpec &spec, BreakoutRetestState &
      }
 
    int cmd = (ev.direction == BR_DIR_BUY) ? OP_BUY : OP_SELL;
-   int ticket = OpenMarketOrderWithRetry(symbol, cmd, lots, ev.slPrice, ev.tpPrice, "FTMO-LRBR-v1");
+   int ticket = OpenMarketOrderWithRetry(symbol, cmd, lots, ev.slPrice, ev.tpPrice, "FTMO-LRBR-v1", g_state);
    if(ticket >= 0) RegisterEntry(g_state, symbol);
   }
 
 void OnTick()
   {
+   // Section 4.4: resolve any persisted unprotected-position emergency
+   // state FIRST, every tick, independent of rollover/floor state -- must
+   // not wait for a daily-limit breach to keep retrying it.
+   if(EnableLiveTrading)
+      ReconcileUnprotectedPosition(g_state, g_unprotectedLastRetryAt, g_unprotectedRetryCount);
+
    string todayKey = FtmoTradingDayKey(TimeGMT());
    if(RolloverIfNeeded(g_state, todayKey, AccountBalance()))
       FtmoLog("ROLLOVER", "new FTMO day " + todayKey + " balance_at_midnight=" + DoubleToString(g_state.balanceAtMidnight, 2));

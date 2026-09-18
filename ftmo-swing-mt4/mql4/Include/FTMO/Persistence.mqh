@@ -42,6 +42,23 @@ struct RiskState
    string totalStopReason;
    bool   historyReconciled;
    string entriesUsedToday;    // FTMO_STATE_LIST_SEP-joined symbols, cleared on rollover
+   // ADDED 2026-09-18 (follow-up audit, section 4.4): if a position is sent
+   // but neither SL/TP application NOR an immediate close succeeds, the
+   // position sits on the broker unprotected. The old behaviour only logged
+   // a warning and relied on the generic account-wide "unknown risk" scan
+   // to block NEW entries -- it never kept retrying to actually fix THIS
+   // position, and would lose track of it entirely across a restart (the
+   // ticket number was never persisted). These three fields turn that into
+   // an explicit, persisted emergency state: ticket=0 means "nothing
+   // unprotected"; a non-zero ticket is retried every tick (see
+   // OrderExec.mqh::ReconcileUnprotectedPosition) using the ORIGINALLY
+   // INTENDED sl/tp (also persisted, since a restart cannot recover intent
+   // that was only ever held in a local variable) until the real broker-side
+   // order is confirmed protected or confirmed closed -- independent of
+   // whether any daily/total floor has been breached.
+   long   unprotectedTicket;
+   double unprotectedIntendedSl;
+   double unprotectedIntendedTp;
   };
 
 string StateFilePath()
@@ -63,6 +80,9 @@ void InitFreshRiskState(RiskState &state)
    state.totalStopReason    = "";
    state.historyReconciled  = false; // must be explicitly set true after a verified reconstruction
    state.entriesUsedToday   = "";
+   state.unprotectedTicket    = 0;
+   state.unprotectedIntendedSl = 0.0;
+   state.unprotectedIntendedTp = 0.0;
   }
 
 bool LoadRiskState(RiskState &state)
@@ -98,6 +118,12 @@ bool LoadRiskState(RiskState &state)
    state.totalStopReason   = parts[7];
    state.historyReconciled = (parts[8] == "1");
    state.entriesUsedToday  = (n > 9) ? parts[9] : "";
+   // Fields 10-12 are newer (2026-09-18 follow-up audit) -- default to "no
+   // unprotected position" when reading a state file saved before this fix
+   // existed, so an upgrade never fails to load, it just starts clean.
+   state.unprotectedTicket     = (n > 10) ? StrToInteger(parts[10]) : 0;
+   state.unprotectedIntendedSl = (n > 11) ? StrToDouble(parts[11]) : 0.0;
+   state.unprotectedIntendedTp = (n > 12) ? StrToDouble(parts[12]) : 0.0;
 
    if(state.accountNumber != AccountNumber() || state.serverName != AccountServer())
      {
@@ -128,10 +154,91 @@ bool SaveRiskState(const RiskState &state)
                  (state.totalStopActive ? "1" : "0") + FTMO_STATE_FIELD_SEP +
                  state.totalStopReason + FTMO_STATE_FIELD_SEP +
                  (state.historyReconciled ? "1" : "0") + FTMO_STATE_FIELD_SEP +
-                 state.entriesUsedToday;
+                 state.entriesUsedToday + FTMO_STATE_FIELD_SEP +
+                 IntegerToString(state.unprotectedTicket) + FTMO_STATE_FIELD_SEP +
+                 DoubleToString(state.unprotectedIntendedSl, 8) + FTMO_STATE_FIELD_SEP +
+                 DoubleToString(state.unprotectedIntendedTp, 8);
    FileWrite(handle, line);
    FileClose(handle);
    return true;
+  }
+
+// Records that `ticket` could not be protected/closed at open time so the
+// per-tick reconciliation loop retries it from here on, including after a
+// restart (the ticket number and originally intended sl/tp are what gets
+// persisted -- a restart cannot recover intent held only in a local
+// variable). Call SaveRiskState immediately after this so a crash right
+// after cannot lose the record.
+void MarkUnprotected(RiskState &state, long ticket, double intendedSl, double intendedTp)
+  {
+   state.unprotectedTicket     = ticket;
+   state.unprotectedIntendedSl = intendedSl;
+   state.unprotectedIntendedTp = intendedTp;
+  }
+
+void ClearUnprotected(RiskState &state)
+  {
+   state.unprotectedTicket     = 0;
+   state.unprotectedIntendedSl = 0.0;
+   state.unprotectedIntendedTp = 0.0;
+  }
+
+bool HasUnprotectedPosition(const RiskState &state)
+  {
+   return state.unprotectedTicket != 0;
+  }
+
+// ADDED 2026-09-18 (follow-up audit, section 4.6): the account/server
+// identity comparison in LoadRiskState is a DATA-INTEGRITY check ("is this
+// state file even the right one for this account"), not an exclusive
+// instance lock -- it does nothing to stop two EA instances from both
+// passing that check and then racing to read-modify-write the same state
+// file on the same tick. This lock file is a genuine (if still limited)
+// mechanism: FileOpen with NEITHER FILE_SHARE_READ NOR FILE_SHARE_WRITE
+// requests exclusive access, so a second OnInit's FileOpen call on the same
+// path fails for as long as the first EA keeps its handle open (held for
+// the EA's entire lifetime, released only in OnDeinit).
+//
+// Documented limitation (still real -- read before relying on this):
+// exclusivity is enforced by the terminal PROCESS holding the handle, so it
+// blocks a second EA instance within the SAME terminal / same MQL4/Files
+// directory (e.g. two charts, or this EA + the other strategy's EA,
+// attached to the same account in the same terminal). It does NOT block a
+// second MT4 TERMINAL INSTALLATION (a different data folder, e.g. after
+// copying the whole terminal to another machine or a second portable
+// install) from independently acquiring its OWN lock in ITS OWN
+// MQL4/Files directory and trading the same broker account unopposed --
+// that would require a server-side or broker-side control this prototype
+// has no access to, and remains an open item; see docs/UNKNOWNS.md.
+int g_ftmoLockHandle = INVALID_HANDLE;
+
+string LockFilePath()
+  {
+   return "FTMO_InstanceLock_" + IntegerToString(AccountNumber()) + ".lock";
+  }
+
+bool AcquireInstanceLock()
+  {
+   g_ftmoLockHandle = FileOpen(LockFilePath(), FILE_WRITE | FILE_BIN); // no FILE_SHARE_* -> exclusive
+   if(g_ftmoLockHandle == INVALID_HANDLE)
+     {
+      Print("FTMO: FATAL -- could not acquire instance lock '", LockFilePath(),
+            "' (errno=", GetLastError(), ") -- another EA instance from this project may already be ",
+            "running against this account in this terminal; refusing to init rather than race it");
+      return false;
+     }
+   FileWriteInteger(g_ftmoLockHandle, (int)TimeLocal()); // arbitrary content -- only holding the handle matters
+   FileFlush(g_ftmoLockHandle);
+   return true;
+  }
+
+void ReleaseInstanceLock()
+  {
+   if(g_ftmoLockHandle != INVALID_HANDLE)
+     {
+      FileClose(g_ftmoLockHandle);
+      g_ftmoLockHandle = INVALID_HANDLE;
+     }
   }
 
 // Call once per tick with today's FTMO day key. On first observation of a
@@ -183,6 +290,7 @@ bool CanOpenNewEntry(const RiskState &state, string symbol)
   {
    if(!state.historyReconciled) return false;
    if(StopActive(state)) return false;
+   if(HasUnprotectedPosition(state)) return false; // section 4.4: an unresolved unprotected position blocks all new entries, not just the account-wide unknown-risk scan
    return !SymbolUsedToday(state, symbol);
   }
 

@@ -12,9 +12,16 @@
 
 #include "Config.mqh"
 #include "Logging.mqh"
+#include "Persistence.mqh"
 
 #define MAX_ORDER_RETRIES 3
 #define RETRY_SLEEP_MS    1500
+// Section 4.4 (follow-up audit): bound how often ReconcileUnprotectedPosition
+// actually calls OrderModify/OrderClose (never spam the trade server every
+// tick) and how often it logs (never spam the log every tick either), while
+// still checking resolution cheaply (OrderSelect only) on every tick.
+#define UNPROTECTED_RETRY_INTERVAL_SEC 20
+#define UNPROTECTED_LOG_EVERY_N_RETRIES 5
 
 // True if an order with this MagicNumber already exists on this symbol --
 // used before resending after an ambiguous OrderSend result (timeout /
@@ -45,7 +52,7 @@ bool IsRetryableError(int err)
 // stops-level/freeze-level), the position is closed immediately and no
 // further retry is attempted for that signal.
 int OpenMarketOrderWithRetry(
-   string symbol, int cmd, double lots, double sl, double tp, string comment)
+   string symbol, int cmd, double lots, double sl, double tp, string comment, RiskState &state)
   {
    if(HasOpenOrderForSymbol(symbol))
      {
@@ -99,8 +106,28 @@ int OpenMarketOrderWithRetry(
             FtmoLog("EXEC", symbol + " could not apply SL/TP after " + IntegerToString(MAX_ORDER_RETRIES) +
                     " attempts -- closing the position rather than leaving it unprotected");
             if(!CloseOrderWithRetry(ticket))
+              {
+               // FIXED 2026-09-18 (follow-up audit, section 4.4): both SL
+               // application AND the immediate close attempt failed here.
+               // The old code just logged this and returned -1, relying
+               // entirely on the account-wide unknown-risk scan to block
+               // NEW entries -- nothing ever came back to retry closing or
+               // protecting THIS specific ticket, and a restart would lose
+               // all memory that it existed (the ticket number was never
+               // persisted). Persist it now so OnTick's
+               // ReconcileUnprotectedPosition retries every tick --
+               // including after a restart, using the ORIGINALLY INTENDED
+               // sl/tp persisted alongside the ticket -- until the real
+               // broker-side order is confirmed protected or confirmed
+               // closed, independent of whether any daily/total floor has
+               // been breached.
+               MarkUnprotected(state, ticket, sl, tp);
+               SaveRiskState(state);
                FtmoLog("EXEC", symbol + " FAILED to close the unprotected ticket=" + IntegerToString(ticket) +
-                       " -- risk controller's account-wide scan will still see its real (missing) SL and block new entries");
+                       " -- persisted as an emergency unprotected-position state; ReconcileUnprotectedPosition " +
+                       "will retry every " + IntegerToString(UNPROTECTED_RETRY_INTERVAL_SEC) +
+                       "s (including across a restart) and new entries are blocked until it resolves");
+              }
             return -1;
            }
          return ticket;
@@ -119,6 +146,73 @@ int OpenMarketOrderWithRetry(
       Sleep(RETRY_SLEEP_MS * attempt);
      }
    return -1;
+  }
+
+// Call once per tick, BEFORE signal processing. Resolves the persisted
+// "unprotected position" emergency state (section 4.4) against the REAL
+// broker-side order -- this works identically right after the failure and
+// after a full terminal/EA restart, since it re-selects by the persisted
+// ticket number rather than relying on any in-memory object.
+//
+// Recovery conditions (either one clears the emergency state):
+//   1. The ticket can no longer be selected, or OrderCloseTime() != 0 ->
+//      it is closed (by us, by the broker, or manually) -- resolved.
+//   2. OrderSelect succeeds and OrderStopLoss() != 0 -> some path (this
+//      function, a manual intervention, or a later successful retry)
+//      already protected it -- resolved.
+// While neither holds, this retries protect-then-close at most once every
+// UNPROTECTED_RETRY_INTERVAL_SEC (never hammers the trade server every
+// tick) and logs at most once every UNPROTECTED_LOG_EVERY_N_RETRIES actual
+// retry attempts (never spams the log either), but the cheap
+// resolved-or-not check above still runs every tick so resolution is
+// detected immediately, not just on a retry tick.
+void ReconcileUnprotectedPosition(RiskState &state, datetime &lastRetryAt, int &retryCount)
+  {
+   if(!HasUnprotectedPosition(state)) return;
+
+   int ticket = (int)state.unprotectedTicket;
+   if(!OrderSelect(ticket, SELECT_BY_TICKET) || OrderCloseTime() != 0)
+     {
+      FtmoLog("RISK", "unprotected ticket=" + IntegerToString(ticket) + " is no longer open -- emergency state cleared");
+      ClearUnprotected(state);
+      SaveRiskState(state);
+      return;
+     }
+   if(OrderStopLoss() != 0)
+     {
+      FtmoLog("RISK", "unprotected ticket=" + IntegerToString(ticket) + " now carries a real SL -- emergency state cleared");
+      ClearUnprotected(state);
+      SaveRiskState(state);
+      return;
+     }
+
+   if(TimeCurrent() - lastRetryAt < UNPROTECTED_RETRY_INTERVAL_SEC) return; // still genuinely unresolved, but throttled
+   lastRetryAt = TimeCurrent();
+   retryCount++;
+
+   bool shouldLog = (retryCount % UNPROTECTED_LOG_EVERY_N_RETRIES) == 1;
+   RefreshRates();
+   if(OrderModify(ticket, OrderOpenPrice(), state.unprotectedIntendedSl, state.unprotectedIntendedTp, 0, clrNONE))
+     {
+      FtmoLog("RISK", "unprotected ticket=" + IntegerToString(ticket) + " protected on retry #" + IntegerToString(retryCount));
+      ClearUnprotected(state);
+      SaveRiskState(state);
+      return;
+     }
+   if(shouldLog)
+      FtmoLog("RISK", "unprotected ticket=" + IntegerToString(ticket) + " retry #" + IntegerToString(retryCount) +
+              " OrderModify(SL) failed errno=" + IntegerToString(GetLastError()) + " -- trying close instead");
+   if(CloseOrderWithRetry(ticket))
+     {
+      FtmoLog("RISK", "unprotected ticket=" + IntegerToString(ticket) + " closed on retry #" + IntegerToString(retryCount));
+      ClearUnprotected(state);
+      SaveRiskState(state);
+      return;
+     }
+   if(shouldLog)
+      FtmoLog("RISK", "unprotected ticket=" + IntegerToString(ticket) + " retry #" + IntegerToString(retryCount) +
+              " close ALSO failed -- still unresolved, will keep retrying every " +
+              IntegerToString(UNPROTECTED_RETRY_INTERVAL_SEC) + "s; new entries stay blocked");
   }
 
 bool CloseOrderWithRetry(int ticket)

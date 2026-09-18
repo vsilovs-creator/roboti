@@ -52,3 +52,19 @@ def test_cross_currency_tick_value_not_silently_assumed():
     )
     with pytest.raises(NotImplementedError):
         value_per_price_unit_per_lot(eur_account_symbol, account_currency="USD")
+
+
+def test_lots_for_risk_folds_in_extra_cost_per_lot():
+    # Same scenario as test_lots_for_risk_matches_hand_computed_value
+    # (risk=25, sl_distance=0.0010 -> 100 USD/lot from price alone), now with
+    # a 5 USD/lot commission folded into the same 25 USD budget: per-lot
+    # cost becomes 105 USD/lot -> 25/105 = 0.238... -> floors to 0.23 lots,
+    # not the 0.25 lots price-alone sizing would give (2026-09-18 follow-up
+    # audit: commission must not sit outside the planned risk budget).
+    lots = lots_for_risk(
+        risk_usd=25.0, sl_distance_price=0.0010, spec=EURUSD, account_currency="USD",
+        extra_cost_usd_per_lot=5.0,
+    )
+    assert lots == 0.23
+    total_risk = risk_usd_for_lots(lots, 0.0010, EURUSD, "USD", extra_cost_usd_per_lot=5.0)
+    assert total_risk <= 25.0
