@@ -15,3 +15,8 @@ All EXPLORATORY -- see `../docs/UNKNOWNS.md` and `../docs/RISK_SPEC.md`.
   mean-reversion fade), run once each at standard textbook parameters, not
   optimized. All three are net-negative on this ~2-month sample; see
   `COMPARISON.md` in that folder and `../README.md` for the interpretation.
+- **run_004_ema_cross_chosen/** -- CURRENT / chosen strategy. EMA(20/50) H1
+  crossover, picked (2026-09-18) as the smallest-loss of the three compared
+  in run_003 after the account owner confirmed no further historical data
+  will be supplied. -257.98 USD (-2.58%), 28 trades. Still a loss, not a
+  validated result -- see `../README.md`.

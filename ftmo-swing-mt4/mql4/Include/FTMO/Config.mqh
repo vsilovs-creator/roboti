@@ -35,6 +35,8 @@ input double  CommissionPerLotRoundTurnUSD = 5.0; // -1 would mean "unconfirmed"
 input double  SpreadPointsHypothetical_S1  = 10;
 input double  SpreadPointsHypothetical_S2  = 15;
 
+// -- London Range Breakout + Retest v1 (FTMO_Swing_EA.mq4) --
+// Kept as the reference / first-attempt strategy; not the active one.
 input int     RangeStartHourLondon     = 0;
 input int     RangeEndHourLondon       = 7;
 input int     EntryStartHourLondon     = 8;
@@ -45,6 +47,18 @@ input double  SlAtrBufferMultiple      = 0.10;
 input int     AtrPeriodM5              = 14;
 input int     EmaPeriodH1              = 200;
 input double  TpRMultiple              = 2.0;
+
+// -- EMA(20/50) H1 crossover (FTMO_Swing_EA_EmaCross.mq4) --
+// CHOSEN 2026-09-18 (account owner): the smallest-loss of three strategies
+// compared on the only available ~2-month sample (see
+// reports/run_003_strategy_comparison/COMPARISON.md in the Python side).
+// No further historical data will be supplied, so this cannot be
+// re-validated out-of-sample -- see docs/UNKNOWNS.md.
+input int     EmaCrossFastPeriodH1     = 20;
+input int     EmaCrossSlowPeriodH1     = 50;
+input int     EmaCrossAtrPeriodH1      = 14;
+input double  EmaCrossAtrSlMultiple    = 1.5;
+input double  EmaCrossTpRMultiple      = 3.0;
 
 input string  ConfigVersion            = "0.1.0-exploratory";
 input int     MagicNumber              = 20260917;

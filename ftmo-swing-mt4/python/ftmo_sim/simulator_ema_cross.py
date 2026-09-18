@@ -52,6 +52,7 @@ def run_h1_signal_simulation(
     engine_factory: Callable[[str], object] = EmaCrossEngine,
     account_number: int = 900000002,
     server_name: str = "OFFLINE-SIM-H1",
+    enforce_session_close: bool = False,
 ) -> EmaCrossResult:
     symbols = list(m1_by_symbol.keys())
     h1_by_symbol = {s: resample(m1_by_symbol[s], 60) for s in symbols}
@@ -109,7 +110,7 @@ def run_h1_signal_simulation(
             trade = simulate_exit(
                 pos, [bar], config.symbols[s], config.raw["account"]["currency"],
                 spreads[s], config.commission_round_turn_usd_per_lot,
-                enforce_session_close=False,
+                enforce_session_close=enforce_session_close,
             )
             if trade is not None:
                 balance += trade.net_pnl_usd
@@ -204,4 +205,20 @@ def run_h1_signal_simulation(
 
 
 def run_ema_cross_simulation(config: RunConfig, m1_by_symbol: dict[str, list[RichCandle]]) -> EmaCrossResult:
-    return run_h1_signal_simulation(config, m1_by_symbol, engine_factory=EmaCrossEngine)
+    """Runs the EMA(20/50) H1 crossover using config['strategies']['ema_cross_v1']
+    -- the CHOSEN strategy going forward (2026-09-18, see config.example.json's
+    `strategies.active`), rather than the strategy_ema_cross.py hardcoded
+    defaults, so changing the config actually changes the run."""
+    p = config.ema_cross_strategy
+    engine_factory = lambda symbol: EmaCrossEngine(
+        symbol,
+        fast_period=p["fast_period_h1"],
+        slow_period=p["slow_period_h1"],
+        atr_period=p["atr_period_h1"],
+        atr_sl_multiple=p["atr_sl_multiple"],
+        tp_r_multiple=p["tp_r_multiple"],
+    )
+    return run_h1_signal_simulation(
+        config, m1_by_symbol, engine_factory=engine_factory,
+        enforce_session_close=p.get("enforce_session_close", False),
+    )

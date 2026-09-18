@@ -31,9 +31,8 @@ from ftmo_sim.bars import load_m1_csv
 from ftmo_sim.config import load_config
 from ftmo_sim.report import build_monthly_table, lowest_equity, max_drawdown_from_peak
 from ftmo_sim.simulator import run_simulation
-from ftmo_sim.simulator_ema_cross import run_h1_signal_simulation
+from ftmo_sim.simulator_ema_cross import run_ema_cross_simulation, run_h1_signal_simulation
 from ftmo_sim.strategy_bb_reversion import BbReversionEngine
-from ftmo_sim.strategy_ema_cross import EmaCrossEngine
 
 FULL_CALENDAR_MONTHS = {(2026, 8)}
 
@@ -88,7 +87,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     baseline = run_simulation(cfg, m1)
-    ema = run_h1_signal_simulation(cfg, m1, engine_factory=EmaCrossEngine, account_number=900000002, server_name="OFFLINE-SIM-EMA")
+    ema = run_ema_cross_simulation(cfg, m1)
     bb = run_h1_signal_simulation(cfg, m1, engine_factory=BbReversionEngine, account_number=900000003, server_name="OFFLINE-SIM-BB")
 
     summaries = [

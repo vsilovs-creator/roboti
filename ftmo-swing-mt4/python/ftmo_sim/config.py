@@ -24,7 +24,9 @@ class RunConfig:
     symbols: dict
     commission_round_turn_usd_per_lot: float | None
     spread_points_hypothetical: dict
-    strategy: dict
+    strategy: dict  # london_breakout_retest_v1 params, kept for the baseline runner
+    active_strategy: str
+    ema_cross_strategy: dict
 
     @property
     def correlation_limits(self) -> CorrelatedGroupLimits:
@@ -82,5 +84,7 @@ def load_config(path: Path) -> RunConfig:
         symbols=symbols,
         commission_round_turn_usd_per_lot=raw["costs"]["commission_round_turn_usd_per_lot"],
         spread_points_hypothetical=raw["costs"]["spread_points_hypothetical"],
-        strategy=raw["strategy"],
+        strategy=raw["strategies"]["london_breakout_retest_v1"],
+        active_strategy=raw["strategies"]["active"],
+        ema_cross_strategy=raw["strategies"]["ema_cross_v1"],
     )

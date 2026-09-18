@@ -53,10 +53,11 @@ particular, are known to change over time at any broker.
   clock shifted which candles fall inside the London range/entry windows,
   producing 20 trades instead of 14 (see `reports/run_002_confirmed_tz_commission/`
   vs. the now-superseded `reports/run_001/`).
-- **Commission:** 5 USD per lot, taken as a round-turn total (not per side --
-  this reading is still worth double-checking against the broker's fee
-  schedule, since "X per lot" is quoted either way across brokers). Encoded
-  as `commission_round_turn_usd_per_lot: 5.0` in `config/config.example.json`.
+- **Commission:** FTMO's forex/exotics commission is 2.50 USD per lot per
+  side, i.e. 5.00 USD total per round-turn lot (confirmed 2026-09-18,
+  matches FTMO's commission structure update). Encoded as
+  `commission_round_turn_usd_per_lot: 5.0` (round-turn total) in
+  `config/config.example.json`.
 
 ## Still UNKNOWN -- must be confirmed before this leaves EXPLORATORY status
 

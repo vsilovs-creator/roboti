@@ -74,22 +74,35 @@
   },
   "costs": {
     "commission_round_turn_usd_per_lot": 5.0,
-    "_comment_commission": "CONFIRMED 2026-09-18 by the account owner: 5 USD per lot. Taken here as a ROUND-TURN total (not per side) -- this reading itself is an assumption worth double-checking against the broker's fee schedule, since '5 USD per lot' is commonly quoted either way.",
+    "_comment_commission": "CONFIRMED 2026-09-18 by the account owner: FTMO's forex/exotics commission is 2.50 USD per lot per side, i.e. 5.00 USD total per round-turn lot. This field is the round-turn total.",
     "spread_model": "hypothetical_fixed_points",
     "spread_points_hypothetical": {"EURUSD": 10, "GBPUSD": 15},
     "_comment_spread": "Spread is floating per the instrument specification screenshot; no historical spread feed was supplied. This fixed-point value is a labeled EXPLORATORY placeholder only."
   },
-  "strategy": {
-    "name": "london_range_breakout_retest_v1",
-    "range_window_london": ["00:00", "07:00"],
-    "entry_window_london": ["08:00", "11:00"],
-    "retest_max_bars_m5": 6,
-    "sl_atr_buffer_multiple": 0.10,
-    "atr_period_m5": 14,
-    "ema_period_h1": 200,
-    "tp_r_multiple": 2.0,
-    "session_close_london": "16:00",
-    "max_trades_per_symbol_per_day": 1,
-    "symbol_priority": ["EURUSD", "GBPUSD"]
+  "strategies": {
+    "active": "ema_cross_v1",
+    "_comment_active": "CHOSEN 2026-09-18 by the account owner ('turpinam to strategiju ar kuru ir lielaka pelna'): of the three strategies compared in reports/run_003_strategy_comparison/, EMA(20/50) H1 crossover had the smallest loss (-257.98 USD) on the only available ~2-month sample. No further historical data will be supplied, so this choice cannot be re-validated against a fresh out-of-sample window -- see docs/UNKNOWNS.md and README.md for why 'least-bad of three on one short sample' is not the same claim as 'validated' or 'expected profitable'.",
+    "london_breakout_retest_v1": {
+      "range_window_london": ["00:00", "07:00"],
+      "entry_window_london": ["08:00", "11:00"],
+      "retest_max_bars_m5": 6,
+      "sl_atr_buffer_multiple": 0.10,
+      "atr_period_m5": 14,
+      "ema_period_h1": 200,
+      "tp_r_multiple": 2.0,
+      "session_close_london": "16:00",
+      "max_trades_per_symbol_per_day": 1,
+      "symbol_priority": ["EURUSD", "GBPUSD"],
+      "_comment": "Fixed baseline (spec section 7). Kept as reference / the first attempt; not the active strategy going forward."
+    },
+    "ema_cross_v1": {
+      "fast_period_h1": 20,
+      "slow_period_h1": 50,
+      "atr_period_h1": 14,
+      "atr_sl_multiple": 1.5,
+      "tp_r_multiple": 3.0,
+      "enforce_session_close": false,
+      "_comment": "Standard textbook parameters, not tuned to this sample. Holds positions overnight/across the 16:00 London boundary by design (a swing-style trend-follower)."
+    }
   }
 }
